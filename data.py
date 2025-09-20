@@ -9,6 +9,46 @@ from collections import defaultdict
 from datasets import load_dataset
 from PIL import Image
 
+class FeatureDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, feature_paths, indices, split='train', feature_only=False):
+        self.feature_only = feature_only
+        self.feature_paths = feature_paths
+        self.dataset = dataset
+        if indices is None:
+            indices = list(range(len(dataset)))
+        self.indices = indices
+        feats = []
+        if feature_paths is None:
+            print('Using dummy features')
+            self.features = torch.zeros(len(self.dataset), 1) # (n, 1) dummy features
+        else:
+            for feature_path in feature_paths:
+                assert os.path.exists(feature_path), f'Feature path {feature_path} does not exist'
+            for feature_path in feature_paths:
+                feat = torch.load(feature_path)[split]
+                assert len(self.dataset) == len(feat), f'Feature path {feature_path} has {len(feat)} entries but dataset has {len(self.dataset)}'
+                feats.append(feat[indices])
+            self.features = torch.cat(feats, dim=1) # (n, d)
+        self.feat_dims = [feat.size(1) for feat in feats]
+        self.num_features = sum(self.feat_dims)
+        print(f'Feature dims: {self.feat_dims}')
+        print(f'Feature dataset: {self.features.size()}')
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        f = self.features[idx]
+        d = self.dataset[self.indices[idx]]
+        if isinstance(d, tuple):
+            x, y = d
+        else:
+            y = d.pop('label')
+            x = d
+        if self.feature_only:
+            return f, y
+        else:
+            return x, f, y
         
 class SyntheticDataset(torch.utils.data.Dataset):
     def __init__(self, directory, class_file, num_images=None, transform=None):
@@ -46,6 +86,30 @@ class SyntheticDataset(torch.utils.data.Dataset):
         if self.transform:
             image = self.transform(image)
         return image, label
+
+class ConcatFeatureDataset(torch.utils.data.Dataset):
+    def __init__(self, ds1, ds2):
+        assert isinstance(ds1, FeatureDataset) and isinstance(ds2, FeatureDataset), "Both datasets must be FeatureDataset instances"
+        self.ds1 = ds1
+        self.ds2 = ds2
+        self.lengths = [len(ds1), len(ds2)]
+
+        assert ds1.feat_dims == ds2.feat_dims, "Feature dimensions must match"
+        assert ds1.num_features == ds2.num_features, "Number of features must match"
+        
+        self.feat_dims = ds1.feat_dims
+        self.num_features = ds1.num_features
+        print(f"ConcatFeatureDataset feature dims: {self.feat_dims}")
+        print(f"ConcatFeatureDataset num_features: {self.num_features}")
+
+    def __len__(self):
+        return self.lengths[0] + self.lengths[1]
+
+    def __getitem__(self, idx):
+        if idx < self.lengths[0]:
+            return self.ds1[idx]
+        else:
+            return self.ds2[idx - self.lengths[0]]
 
 class CachedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
