@@ -40,6 +40,13 @@ def train_epoch(loader, model, criterion, prior, optimizer, stop_prior_grad=Fals
         if freeze_model:
             outputs = outputs.detach()
             feats = feats.detach()
+        # get batch indices of targets whose value is not -1
+        valid_indices = (targets != -1).nonzero(as_tuple=True)[0]
+        if len(valid_indices) == 0:
+            continue
+        outputs = outputs[valid_indices]
+        targets = targets[valid_indices]
+        
         loss = criterion(outputs, targets)
         prior_loss = -prior.prec * prior.log_prob(feats, pretrained_feats)
         total_ce += loss.item()

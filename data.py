@@ -49,30 +49,38 @@ class FeatureDataset(torch.utils.data.Dataset):
             return f, y
         else:
             return x, f, y
-        
-class SyntheticDataset(torch.utils.data.Dataset):
-    def __init__(self, directory, class_file, num_images=None, transform=None):
-        with open(class_file, "r") as f:
-            class_names = [line.strip() for line in f if line.strip()]
-        self.image_paths = []
-        self.labels = []
-        for label, class_name in enumerate(class_names):
-            class_dir = os.path.join(directory, class_name)
-            if num_images is None:
-                num_class_images = len(os.listdir(class_dir))
-            elif isinstance(num_images, int):
-                num_class_images = num_images
-            elif isinstance(num_images, dict):
-                assert class_name in num_images, f'Class {class_name} not in num_images dict'
-                num_class_images = num_images[class_name]
 
-            for idx in range(num_class_images):
-                image_path = os.path.join(class_dir, f"{idx:06d}.png")
-                if os.path.exists(image_path):
-                    self.image_paths.append(image_path)
-                    self.labels.append(label)
-                else:
-                    print(f"Warning: {image_path} does not exist")
+
+class SyntheticDataset(torch.utils.data.Dataset):
+    def __init__(self, directory, class_file=None, num_images=None, transform=None):
+        if class_file is None:
+            files = sorted(glob.glob(os.path.join(directory, "*.png")))
+            if num_images is not None:
+                files = files[:num_images]
+            self.image_paths = files
+            self.labels = [None] * len(files)
+        else:
+            with open(class_file, "r") as f:
+                class_names = [line.strip() for line in f if line.strip()]
+            self.image_paths = []
+            self.labels = []
+            for label, class_name in enumerate(class_names):
+                class_dir = os.path.join(directory, class_name)
+                if num_images is None:
+                    num_class_images = len(os.listdir(class_dir))
+                elif isinstance(num_images, int):
+                    num_class_images = num_images
+                elif isinstance(num_images, dict):
+                    assert class_name in num_images, f'Class {class_name} not in num_images dict'
+                    num_class_images = num_images[class_name]
+
+                for idx in range(num_class_images):
+                    image_path = os.path.join(class_dir, f"{idx:06d}.png")
+                    if os.path.exists(image_path):
+                        self.image_paths.append(image_path)
+                        self.labels.append(label)
+                    else:
+                        print(f"Warning: {image_path} does not exist")
         
         self.transform = transform
 
@@ -85,7 +93,10 @@ class SyntheticDataset(torch.utils.data.Dataset):
         image = Image.open(image_path).convert("RGB")
         if self.transform:
             image = self.transform(image)
-        return image, label
+        if label is None:
+            return image, -1
+        else:
+            return image, label
 
 class ConcatFeatureDataset(torch.utils.data.Dataset):
     def __init__(self, ds1, ds2):

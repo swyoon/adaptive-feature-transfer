@@ -113,7 +113,7 @@ def main(
     # Add auxiliary dataset if specified
     if auxiliary_dataset is not None:
         assert directory is not None, "directory must be provided when auxiliary_dataset is specified"
-        assert class_file is not None, "class_file must be provided when auxiliary_dataset is specified"
+        # assert class_file is not None, "class_file must be provided when auxiliary_dataset is specified"
         # assert num_images is not None, "num_images must be provided when auxiliary_dataset is specified"
 
         print(f"Creating auxiliary dataset: {auxiliary_dataset}")
@@ -127,11 +127,11 @@ def main(
             # Use feature paths for the auxiliary dataset
             if method == "ft":
                 synthetic_feature_paths = [
-                    f"./features/{model}_{dataset}_edm_aux1_ae.pt" for model in pretrained_models
+                    f"./features/{model}_{dataset}_sdxl_no_class_ae.pt" for model in pretrained_models
                 ]
             else:
                 synthetic_feature_paths = [
-                    f"./features/{model}_{dataset}_edm_aux1.pt" for model in pretrained_models
+                    f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
                 ]
 
             # Check if synthetic feature files exist
@@ -214,11 +214,11 @@ def main(
             if pretrained_models not in [None, "none"]:
                 if method == "ft":
                     synthetic_feature_paths = [
-                        f"./features/{model}_{dataset}_edm_aux1_ae.pt" for model in pretrained_models
+                        f"./features/{model}_{dataset}_sdxl_no_class_ae.pt" for model in pretrained_models
                     ]
                 else:
                     synthetic_feature_paths = [
-                        f"./features/{model}_{dataset}_edm_aux1.pt" for model in pretrained_models
+                        f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
                     ]
 
                 for path in synthetic_feature_paths:
