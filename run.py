@@ -127,11 +127,11 @@ def main(
             # Use feature paths for the auxiliary dataset
             if method == "ft":
                 synthetic_feature_paths = [
-                    f"./features/{model}_{dataset}_aux_ae.pt" for model in pretrained_models
+                    f"./features/{model}_{dataset}_edm_aux1_ae.pt" for model in pretrained_models
                 ]
             else:
                 synthetic_feature_paths = [
-                    f"./features/{model}_{dataset}_aux.pt" for model in pretrained_models
+                    f"./features/{model}_{dataset}_edm_aux1.pt" for model in pretrained_models
                 ]
 
             # Check if synthetic feature files exist
@@ -214,11 +214,11 @@ def main(
             if pretrained_models not in [None, "none"]:
                 if method == "ft":
                     synthetic_feature_paths = [
-                        f"./features/{model}_{dataset}_aux_ae.pt" for model in pretrained_models
+                        f"./features/{model}_{dataset}_edm_aux1_ae.pt" for model in pretrained_models
                     ]
                 else:
                     synthetic_feature_paths = [
-                        f"./features/{model}_{dataset}_aux.pt" for model in pretrained_models
+                        f"./features/{model}_{dataset}_edm_aux1.pt" for model in pretrained_models
                     ]
 
                 for path in synthetic_feature_paths:
