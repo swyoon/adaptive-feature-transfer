@@ -1,4 +1,5 @@
 import os
+import glob
 import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
@@ -6,48 +7,45 @@ from torchvision import transforms, datasets
 from tqdm import tqdm
 from collections import defaultdict
 from datasets import load_dataset
+from PIL import Image
 
-class FeatureDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, feature_paths, indices, split='train', feature_only=False):
-        self.feature_only = feature_only
-        self.feature_paths = feature_paths
-        self.dataset = dataset
-        if indices is None:
-            indices = list(range(len(dataset)))
-        self.indices = indices
-        feats = []
-        if feature_paths is None:
-            print('Using dummy features')
-            self.features = torch.zeros(len(self.dataset), 1) # (n, 1) dummy features
-        else:
-            for feature_path in feature_paths:
-                assert os.path.exists(feature_path), f'Feature path {feature_path} does not exist'
-            for feature_path in feature_paths:
-                feat = torch.load(feature_path)[split]
-                assert len(self.dataset) == len(feat), f'Feature path {feature_path} has {len(feat)} entries but dataset has {len(self.dataset)}'
-                feats.append(feat[indices])
-            self.features = torch.cat(feats, dim=1) # (n, d)
-        self.feat_dims = [feat.size(1) for feat in feats]
-        self.num_features = sum(self.feat_dims)
-        print(f'Feature dims: {self.feat_dims}')
-        print(f'Feature dataset: {self.features.size()}')
+        
+class SyntheticDataset(torch.utils.data.Dataset):
+    def __init__(self, directory, class_file, num_images=None, transform=None):
+        with open(class_file, "r") as f:
+            class_names = [line.strip() for line in f if line.strip()]
+        self.image_paths = []
+        self.labels = []
+        for label, class_name in enumerate(class_names):
+            class_dir = os.path.join(directory, class_name)
+            if num_images is None:
+                num_class_images = len(os.listdir(class_dir))
+            elif isinstance(num_images, int):
+                num_class_images = num_images
+            elif isinstance(num_images, dict):
+                assert class_name in num_images, f'Class {class_name} not in num_images dict'
+                num_class_images = num_images[class_name]
+
+            for idx in range(num_class_images):
+                image_path = os.path.join(class_dir, f"{idx:06d}.png")
+                if os.path.exists(image_path):
+                    self.image_paths.append(image_path)
+                    self.labels.append(label)
+                else:
+                    print(f"Warning: {image_path} does not exist")
+        
+        self.transform = transform
 
     def __len__(self):
-        return len(self.indices)
-
+        return len(self.image_paths)
+    
     def __getitem__(self, idx):
-        f = self.features[idx]
-        d = self.dataset[self.indices[idx]]
-        if isinstance(d, tuple):
-            x, y = d
-        else:
-            y = d.pop('label')
-            x = d
-        if self.feature_only:
-            return f, y
-        else:
-            return x, f, y
-        
+        image_path = self.image_paths[idx]
+        label = self.labels[idx]
+        image = Image.open(image_path).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        return image, label
 
 class CachedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
