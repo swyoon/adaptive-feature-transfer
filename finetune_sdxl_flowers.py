@@ -138,29 +138,28 @@ class Flowers102Dataset(torch.utils.data.Dataset):
         image, label = self.dataset[idx]
         prompt = f"a photo of a {self.class_names[label]}"
         return {
-            'pixel_values': image.to(torch.bfloat16),  # Use bfloat16 for better stability
+            'pixel_values': image.to(torch.float16),  # Ensure float16 dtype
             'input_ids': prompt
         }
 
 def setup_models(model_id="stabilityai/stable-diffusion-xl-base-1.0"):
     """Setup SDXL models with LoRA adapters"""
     
-    # Load models with bfloat16 for better numerical stability
-    unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet", torch_dtype=torch.bfloat16)
-    text_encoder_1 = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16)
-    text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(model_id, subfolder="text_encoder_2", torch_dtype=torch.bfloat16)
+    # Load models
+    unet = UNet2DConditionModel.from_pretrained(model_id, subfolder="unet", torch_dtype=torch.float16)
+    text_encoder_1 = CLIPTextModel.from_pretrained(model_id, subfolder="text_encoder", torch_dtype=torch.float16)
+    text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(model_id, subfolder="text_encoder_2", torch_dtype=torch.float16)
     tokenizer_1 = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
     tokenizer_2 = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer_2")
     noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
-    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.bfloat16)
+    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.float16)
     
-    # Setup LoRA for UNet with more conservative settings
+    # Setup LoRA for UNet
     unet_lora_config = LoraConfig(
-        r=8,  # Reduced rank for stability
-        lora_alpha=16,  # Reduced alpha
+        r=16,
+        lora_alpha=32,
         target_modules=["to_k", "to_q", "to_v", "to_out.0"],
         lora_dropout=0.1,
-        init_lora_weights="gaussian"  # Better initialization
     )
     
     unet = get_peft_model(unet, unet_lora_config)
@@ -199,11 +198,8 @@ def encode_prompts(prompts, text_encoder_1, text_encoder_2, tokenizer_1, tokeniz
         pooled_prompt_embeds = prompt_embeds_2[0]  # Pooled embeddings for micro-conditioning
         prompt_embeds_2 = prompt_embeds_2.hidden_states[-2]  # Use penultimate layer
     
-    # Concatenate the embeddings from both encoders with proper normalization
+    # Concatenate the embeddings from both encoders
     prompt_embeds = torch.cat([prompt_embeds_1, prompt_embeds_2], dim=-1)
-    
-    # Normalize concatenated embeddings to prevent explosion
-    prompt_embeds = F.layer_norm(prompt_embeds, prompt_embeds.shape[-1:])
     
     # For SDXL, we also need to handle the pooled embeddings for micro-conditioning
     # Create time_ids (original size, crops coords, target size) - using default values
@@ -212,7 +208,7 @@ def encode_prompts(prompts, text_encoder_1, text_encoder_2, tokenizer_1, tokeniz
     crops_coords_top_left = (0, 0)
     target_size = (1024, 1024)
     
-    add_time_ids = torch.tensor([original_size + crops_coords_top_left + target_size]).repeat(batch_size, 1).to(device, dtype=torch.bfloat16)
+    add_time_ids = torch.tensor([original_size + crops_coords_top_left + target_size]).repeat(batch_size, 1).to(device, dtype=torch.float16)
     
     # Concatenate pooled embeddings with time embeddings for micro-conditioning
     added_cond_kwargs = {
@@ -225,56 +221,35 @@ def encode_prompts(prompts, text_encoder_1, text_encoder_2, tokenizer_1, tokeniz
 def train_step(batch, unet, text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, noise_scheduler, vae, device):
     """Single training step"""
     
-    pixel_values = batch['pixel_values'].to(device, dtype=torch.bfloat16)  # Match VAE dtype
+    pixel_values = batch['pixel_values'].to(device, dtype=torch.float16)
     prompts = batch['input_ids']
     
     # Encode images to latents
     with torch.no_grad():
         latents = vae.encode(pixel_values).latent_dist.sample()
         latents = latents * vae.config.scaling_factor
-        
-        # Check for NaN/Inf in latents
-        if torch.isnan(latents).any() or torch.isinf(latents).any():
-            print("Warning: NaN or Inf detected in latents!")
-            return torch.tensor(0.0, device=device, requires_grad=True)
     
     # Encode prompts
     encoder_hidden_states, added_cond_kwargs = encode_prompts(prompts, text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, device)
     
-    # Check for NaN/Inf in text embeddings
-    if torch.isnan(encoder_hidden_states).any() or torch.isinf(encoder_hidden_states).any():
-        print("Warning: NaN or Inf detected in text embeddings!")
-        return torch.tensor(0.0, device=device, requires_grad=True)
-    
     # Sample noise and timesteps
-    noise = torch.randn_like(latents, dtype=torch.bfloat16)  # Match latents dtype
+    noise = torch.randn_like(latents, dtype=torch.float16)
     timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=device)
     timesteps = timesteps.long()
     
     # Add noise to latents
     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
     
-    # Check for NaN/Inf in noisy latents
-    if torch.isnan(noisy_latents).any() or torch.isinf(noisy_latents).any():
-        print("Warning: NaN or Inf detected in noisy latents!")
-        return torch.tensor(0.0, device=device, requires_grad=True)
+    # Predict noise with added conditioning for SDXL
+    model_pred = unet(
+        noisy_latents, 
+        timesteps, 
+        encoder_hidden_states.to(torch.float16),
+        added_cond_kwargs={k: v.to(torch.float16) for k, v in added_cond_kwargs.items()}
+    ).sample
     
-    # Predict noise with added conditioning for SDXL - use bfloat16 for better stability
-    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-        model_pred = unet(
-            noisy_latents.to(torch.bfloat16), 
-            timesteps, 
-            encoder_hidden_states.to(torch.bfloat16),
-            added_cond_kwargs={k: v.to(torch.bfloat16) for k, v in added_cond_kwargs.items()}
-        ).sample
-    
-    # Calculate loss with proper dtype handling
+    # Calculate loss
     loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
-    
-    # Check for NaN loss
-    if torch.isnan(loss) or torch.isinf(loss):
-        print(f"Warning: NaN or Inf loss detected! Model pred range: [{model_pred.min():.4f}, {model_pred.max():.4f}], Noise range: [{noise.min():.4f}, {noise.max():.4f}]")
-        return torch.tensor(0.0, device=device, requires_grad=True)
     
     return loss
 
@@ -307,18 +282,8 @@ def main(args):
     text_encoder_2.eval()
     vae.eval()
     
-    # Setup optimizer with more conservative settings
-    optimizer = torch.optim.AdamW(
-        unet.parameters(), 
-        lr=args.learning_rate, 
-        weight_decay=args.weight_decay,
-        eps=1e-8,  # Larger epsilon for numerical stability
-        betas=(0.9, 0.95)  # More conservative beta values
-    )
-    
-    # Add learning rate scheduler for stability
-    from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
+    # Setup optimizer
+    optimizer = torch.optim.AdamW(unet.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # Training loop
     global_step = 0
@@ -332,43 +297,20 @@ def main(args):
             optimizer.zero_grad()
             
             loss = train_step(batch, unet, text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, noise_scheduler, vae, device)
-            
-            # Skip backward if loss is 0 (NaN detected)
-            if loss.item() == 0.0:
-                continue
-                
             loss.backward()
             
-            # Check gradients before clipping
-            total_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
-            
-            # Skip update if gradients are too large
-            if total_norm > args.max_grad_norm * 10:
-                print(f"Warning: Very large gradient norm detected: {total_norm:.2f}, skipping update")
-                continue
-            
+            torch.nn.utils.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
             optimizer.step()
-            scheduler.step()  # Update learning rate
             
             epoch_loss += loss.item()
             global_step += 1
             
             # Update progress bar
-            current_lr = scheduler.get_last_lr()[0]
-            progress_bar.set_postfix({
-                'loss': loss.item(), 
-                'lr': f'{current_lr:.2e}',
-                'grad_norm': f'{total_norm:.2f}'
-            })
+            progress_bar.set_postfix({'loss': loss.item()})
             
             # Log to wandb
             if args.use_wandb:
-                wandb.log({
-                    "train_loss": loss.item(), 
-                    "learning_rate": current_lr,
-                    "grad_norm": total_norm,
-                    "global_step": global_step
-                })
+                wandb.log({"train_loss": loss.item(), "global_step": global_step})
             
             # Save checkpoint
             if global_step % args.save_steps == 0:
