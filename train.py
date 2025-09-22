@@ -48,7 +48,7 @@ def train_epoch(loader, model, criterion, prior, optimizer, stop_prior_grad=Fals
         targets = targets[valid_indices]
         
         loss = criterion(outputs, targets)
-        prior_loss = -prior.prec * prior.log_prob(feats, pretrained_feats)
+        prior_loss = -prior.prec * prior.log_prob(feats, pretrained_feats, grad_indices=valid_indices)
         total_ce += loss.item()
         if stop_prior_grad:
             prior_loss = prior_loss.detach()

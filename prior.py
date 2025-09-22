@@ -94,8 +94,18 @@ class KernelPrior(Prior, nn.Module):
         print(f'dk: {self.metrics["dk"]:.3f}')
 
 
-    def log_prob(self, feat, pretrained_feat):
-        target_feat = self(pretrained_feat) # (n, out_dim)
+    def log_prob(self, feat, pretrained_feat, grad_indices=None):
+        if grad_indices is not None:
+            total_indices = torch.arange(len(pretrained_feat)).to(pretrained_feat.device)
+            no_grad_indices = total_indices[~torch.isin(total_indices, grad_indices)]
+            target_feat_grad = self(pretrained_feat[grad_indices])
+            with torch.no_grad():
+                target_feat_no_grad = self(pretrained_feat[no_grad_indices])
+            target_feat = torch.zeros_like(pretrained_feat)
+            target_feat[grad_indices] = target_feat_grad
+            target_feat[no_grad_indices] = target_feat_no_grad
+        else:
+            target_feat = self(pretrained_feat) # (n, out_dim)
         # center feat and target_feat per dimension
         feat = feat - torch.mean(feat, dim=0, keepdim=True)
         target_feat = target_feat - torch.mean(target_feat, dim=0, keepdim=True)
