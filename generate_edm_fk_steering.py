@@ -9,8 +9,111 @@ import random
 from diffusion.edm.model import EDM
 from diffusion.edm.fkd.fkd_rewards import DiversityModel
 
+from models import create_model
+from prior import get_prior
 
-def main(seed, edm_ckpt, scale_ckpt, num_target_images, save_dir, class_names):
+class DummyFeatureDataset:
+    feat_dims = [1536] # NOTE hard coded for vit_giant_patch14_dinov2.lvd142m
+    num_features = 1536
+    def __len__(self):
+        return 1
+
+class AFTModule(torch.nn.Module):
+    def __init__(self, model, model_out_dim, pretrained_model, prior_prec, model_ckpt, prior_ckpt, **kwargs):
+        super().__init__()
+        self.model, get_transform, tokenizer, input_collate_fn = create_model(
+        model, out_dim=model_out_dim, pretrained=False
+        )
+        model_state = torch.load(model_ckpt, map_location="cpu")
+        self.model.load_state_dict(model_state, strict=False)
+        self.model.eval()
+
+        self.transform = get_transform(train=False)
+        
+
+        self.pretrained_model, get_transform_pretrained, tokenizer_pretrained, input_collate_fn_pretrained = create_model(pretrained_model, out_dim=0, pretrained=True, extract_features=True)
+        self.pretrained_model.eval()
+
+        self.transform_pretrained = get_transform_pretrained(train=False)
+
+        ds = DummyFeatureDataset()
+        train_ds = DummyFeatureDataset()
+
+        self.prior = get_prior(
+            self.model.feat_dim,
+            ds,
+            prior_prec,
+            learn_scales=False,
+            tensor_product=False, # NOTE: should be true if experimenting with dataset == "snli-ve",
+            prior_type="kernel",
+        )
+        prior_state = torch.load(prior_ckpt, map_location="cpu")
+        self.prior.load_state_dict(prior_state, strict=True)
+
+    def get_ce_loss(self, x, y, reduction="mean"):
+        x = self.transform(x)
+        with torch.no_grad():
+            outputs = self.model(x)
+        loss = torch.nn.functional.cross_entropy(outputs, y, reduction=reduction)
+        return loss
+
+    def get_aft_loss_batch(self, x):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+
+        prior_loss = -self.prior.prec * self.prior.log_prob(feats, feats_pretrained)
+        return prior_loss
+
+    def get_total_loss_batch(self, x, y):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, y)
+
+        prior_loss = - self.prior.prec * self.prior.log_prob(feats, feats_pretrained)
+        return ce_loss + prior_loss
+
+    def get_aft_loss(self, x, feature_pool_model, feature_pool_pretrained):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        return prior_loss
+
+    def get_total_loss(self, x, y, feature_pool_model, feature_pool_pretrained):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+
+        ce_loss = torch.nn.functional.cross_entropy(outputs, y)
+
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        return ce_loss + prior_loss
+
+    def get_model_feature(self, x):
+        with torch.no_grad():
+            _, feats = self.model(self.transform(x), return_feat=True)
+        return feats
+
+    def get_pretrained_feature(self, x):
+        with torch.no_grad():
+            feats = self.pretrained_model(self.transform_pretrained(x))
+        return feats
+
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
@@ -36,22 +139,18 @@ def main(seed, edm_ckpt, scale_ckpt, num_target_images, save_dir, class_names):
         "resampling_t_end": 60,
         "time_steps": 60, # set as same as resampling_t_end
         "latent_to_decode_fn": lambda x: x,  # identity for EDM (already image-space)
-        "get_reward_fn": "Diversity",  # "ClassifierLoss" will be defined later
+        "get_reward_fn": "AFT",  # "ClassifierLoss" will be defined later
         "cls_model": None,  # it is required when using "ClassifierLoss"
         "use_smc": True,
         "output_dir": "./outputs/generated/fkd_results", # modify
         "print_rewards": False, # print rewards during sampling
         "visualize_intermediate": False, # save results during sampling in output_dir
         "visualzie_x0": False, # save x0 prediction during sampling in output_dir
-        "feature_pool": torch.empty((0, 1536)).to(DEVICE), # random features for demo; replace with real features
-        "model_class": "vit_giant_patch14_dinov2.lvd142m",
-        "num_features": 1536,
-        "diag": True,
-        "tensor_product": False,
-        "scale_ckpt": scale_ckpt,
+        "feature_pool_model": torch.empty((0, 2048)).to(DEVICE), # random features for demo; replace with real features
+        "feature_pool_pretrained": torch.empty((0, 1536)).to(DEVICE), # random features for demo; replace with real features
+        "aft_module": aft_module,
+        "score": aft_score,
     }
-
-    model = DiversityModel(**FKD_ARGS).to(DEVICE)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -74,18 +173,32 @@ def main(seed, edm_ckpt, scale_ckpt, num_target_images, save_dir, class_names):
             image_ind += 1
 
 
-        with torch.no_grad():
-            features = model.get_scaled_feature(result[0])
+        features_model = aft_module.get_model_feature(images)
+        features_pretrained = aft_module.get_pretrained_feature(images)
 
-        FKD_ARGS["feature_pool"] = torch.cat([FKD_ARGS["feature_pool"], features], dim=0)
+        FKD_ARGS["feature_pool_model"] = torch.cat([FKD_ARGS["feature_pool_model"], features_model], dim=0)
+        FKD_ARGS["feature_pool_pretrained"] = torch.cat([FKD_ARGS["feature_pool_pretrained"], features_pretrained], dim=0)
+
 
 if __name__ == "__main__":
     seed = 0
     edm_ckpt = "/NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl"
-    scale_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/prior.pt"
+    model_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/model.pt"
+    prior_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/prior.pt"
+
+    aft_module = AFTModule(
+        model="resnet50.a1_in1k",
+        model_out_dim=102,
+        pretrained_model="vit_giant_patch14_dinov2.lvd142m",
+        prior_prec=10,
+        model_ckpt=model_ckpt,
+        prior_ckpt=prior_ckpt,
+    ).to('cuda')
+
+    aft_score = "total"
     num_target_images = 3000
-    save_dir = f"./outputdir5/edm_div_cos_min_steering/flowers-{seed}"
+    save_dir = f"./outputdir5/edm_aft_{aft_score}_steering/flowers-{seed}"
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, scale_ckpt, num_target_images, save_dir, class_names)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names)

@@ -145,15 +145,16 @@ class EDM(nn.Module):
             latents = latents.repeat(self.batch_size, 1, 1, 1)
         if class_label is None:
             if self.net.label_dim:
-                class_labels = torch.eye(self.net.label_dim, device=device)[
-                    torch.randint(self.net.label_dim, (1, ), device=device).repeat(self.batch_size)
-                ]
-        elif isinstance(class_label, int):
+                class_label = torch.randint(self.net.label_dim, (), device="cpu").item()
+        if isinstance(class_label, int):
             if self.net.label_dim:
                 class_labels = torch.eye(self.net.label_dim, device=device)[
                     torch.tensor([class_label] * self.batch_size, device=device)
                 ]
 
+        if fkd_args["get_reward_fn"] == "AFT":
+            fkd_args["targets"] = torch.tensor([class_label] * self.batch_size, device=device)
+            
         # Set up for FK-steering
         def postprocess_and_apply_reward_fn(images):
             rewards = get_reward_function(

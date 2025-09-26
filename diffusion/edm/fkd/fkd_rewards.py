@@ -124,6 +124,14 @@ def get_reward_function(reward_name, images, prompts, metric_to_chase="overall_s
     elif reward_name == "Diversity":
         return do_diversity_score(images=images, feature_pool=kwargs.pop("feature_pool"), **kwargs)
 
+    elif reward_name == "AFT":
+        aft_module = kwargs.pop("aft_module")
+        score = kwargs.pop("score")
+        targets = kwargs.pop("targets", None)
+        feature_pool_model = kwargs.pop("feature_pool_model", None)
+        feature_pool_pretrained = kwargs.pop("feature_pool_pretrained", None)
+        return do_aft_score(images=images, aft_module=aft_module, score=score, targets=targets, feature_pool_model=feature_pool_model, feature_pool_pretrained=feature_pool_pretrained)
+
     else:
         raise ValueError(f"Unknown metric: {reward_name}")
 
@@ -368,7 +376,7 @@ class DiversityModel(nn.Module):
         model = timm.create_model(model_class, num_classes=0, pretrained=True)
         data_config = timm.data.resolve_model_data_config(model)
         get_transform = lambda train: timm.data.create_transform(**data_config, is_training=train)
-        self.transform = get_transform(train=True)
+        self.transform = get_transform(train=False)
         model = TimmWrapper(model)
         self.model = model.cuda().eval()
 
@@ -444,3 +452,20 @@ def do_diversity_score(*, images, feature_pool, **kwargs):
         diversity_result = REWARDS_DICT["Diversity"].score(images, feature_pool)
     return diversity_result
 
+
+def do_aft_score(*, images, aft_module, score, targets=None, feature_pool_model=None, feature_pool_pretrained=None, **kwargs):
+    if score == "ce":
+        rewards = aft_module.get_ce_loss(images, targets, reduction="none").detach().cpu().tolist()
+    elif score == "aft":
+        rewards = []
+        for image in images:
+            reward = aft_module.get_aft_loss(image.unsqueeze(0), feature_pool_model, feature_pool_pretrained).detach().cpu().item()
+            rewards.append(reward)
+    elif score == "total":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.get_total_loss(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained).detach().cpu().item()
+            rewards.append(reward)
+    else:
+        raise ValueError(f"Unknown score: {score}")
+    return rewards
