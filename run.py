@@ -42,6 +42,9 @@ def main(
     directory=None,
     class_file=None,
     num_images=None,
+    model_ckpt=None,
+    prior_ckpt=None,
+    feature_path_postfix="",
     **kwargs,
 ):
     assert no_augment or method == "init", "Must not use augmentation unless method == init"
@@ -125,14 +128,16 @@ def main(
         # Create feature dataset for synthetic data
         if pretrained_models not in [None, "none"]:
             # Use feature paths for the auxiliary dataset
-            if method == "ft":
-                synthetic_feature_paths = [
-                    f"./features/{model}_{dataset}_sdxl_no_class_ae.pt" for model in pretrained_models
-                ]
-            else:
-                synthetic_feature_paths = [
-                    f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
-                ]
+            # if method == "ft":
+            #     synthetic_feature_paths = [
+            #         f"./features/{model}_{dataset}_sdxl_no_class_ae.pt" for model in pretrained_models
+            #     ]
+            # else:
+            #     synthetic_feature_paths = [
+            #         f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
+            #     ]
+            synthetic_feature_paths = [f"./features/{model}_{dataset}_{feature_path_postfix}.pt" for model in pretrained_models]
+
 
             # Check if synthetic feature files exist
             for path in synthetic_feature_paths:
@@ -212,14 +217,16 @@ def main(
             )
 
             if pretrained_models not in [None, "none"]:
-                if method == "ft":
-                    synthetic_feature_paths = [
-                        f"./features/{model}_{dataset}_sdxl_no_class_ae.pt" for model in pretrained_models
-                    ]
-                else:
-                    synthetic_feature_paths = [
-                        f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
-                    ]
+                # if method == "ft":
+                #     synthetic_feature_paths = [
+                #         f"./features/{model}_{dataset}_sdxl_no_class_ae.pt" for model in pretrained_models
+                #     ]
+                # else:
+                #     synthetic_feature_paths = [
+                #         f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
+                #     ]
+                synthetic_feature_paths = [f"./features/{model}_{dataset}_{feature_path_postfix}.pt" for model in pretrained_models]
+
 
                 for path in synthetic_feature_paths:
                     assert os.path.exists(path), f"Synthetic feature path {path} does not exist"
@@ -332,6 +339,17 @@ def main(
         loaders = [
             [d for d in loader] if loader and len(loader) <= 100 else loader for loader in loaders
         ]
+    
+    if model_ckpt is not None and init_model is not None:
+        raise ValueError("Cannot specify both model_ckpt and init_model")
+    
+    if model_ckpt is not None:
+        model.load_state_dict(torch.load(model_ckpt, map_location="cpu"))
+        print(f"Loaded model weights from {model_ckpt}")
+
+    if prior_ckpt is not None:
+        prior.load_state_dict(torch.load(prior_ckpt, map_location="cpu"))
+        print(f"Loaded prior weights from {prior_ckpt}")
 
     hypers = {
         "optimizer": optimizer,
