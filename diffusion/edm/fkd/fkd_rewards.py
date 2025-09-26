@@ -7,7 +7,7 @@ import torchvision.transforms as T
 import numpy as np
 from PIL import Image
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
-
+import timm
 
 # from image_reward_utils import rm_load
 # from llm_grading import LLMGrader
@@ -17,6 +17,7 @@ REWARDS_DICT = {
     "Clip-Score": None,
     "ImageReward": None,
     "LLMGrader": None,
+    "Diversity": None,
 }
 
 
@@ -119,6 +120,9 @@ def get_reward_function(reward_name, images, prompts, metric_to_chase="overall_s
 
     elif reward_name == "PixelReward":
         return do_pixel_score(images=images, prompts=prompts, **kwargs)
+
+    elif reward_name == "Diversity":
+        return do_diversity_score(images=images, feature_pool=kwargs.pop("feature_pool"), **kwargs)
 
     else:
         raise ValueError(f"Unknown metric: {reward_name}")
@@ -320,3 +324,123 @@ class CLIPScore(nn.Module):
             return rewards, {"image": image_features, "txt": txt_features}
 
         return rewards.detach().cpu().numpy().item()
+    
+
+class TimmWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.classifier = model.get_classifier()
+        self.model.reset_classifier(0)
+        self.feature_reshape = lambda x: x
+        if isinstance(self.classifier, nn.Linear):
+            self.feat_dim = self.classifier.in_features
+        elif isinstance(self.classifier, nn.Conv2d): # resnetv2
+            self.feat_dim = self.classifier.in_channels
+            # reshape a flattened feature into 1x1 image
+            self.feature_reshape = lambda x: x.reshape(x.shape[0], self.feat_dim, 1, 1)
+        else:
+            self.feat_dim = None
+    
+    def forward(self, x, return_feat=False):
+        if isinstance(x, dict):
+            x = x['image']
+        feat = self.model(x)
+        feat = self.feature_reshape(feat) # resnetv2
+        out = self.classifier(feat)
+        out = out.reshape(feat.shape[0], -1) # resnetv2
+        feat = feat.reshape(feat.shape[0], -1) # resnetv2
+        if return_feat:
+            return out, feat
+        return out
+
+class DiversityModel(nn.Module):
+    def __init__(self,
+        model_class,
+        num_features,
+        diag,
+        tensor_product,
+        scale_ckpt,
+        **kwargs
+    ):
+        super().__init__()
+        # model, get_transform, tokenizer, input_collate_fn = models.create_model(model_class, out_dim=0, pretrained=True, extract_features=True, **kwargs)
+        model = timm.create_model(model_class, num_classes=0, pretrained=True)
+        data_config = timm.data.resolve_model_data_config(model)
+        get_transform = lambda train: timm.data.create_transform(**data_config, is_training=train)
+        self.transform = get_transform(train=True)
+        model = TimmWrapper(model)
+        self.model = model.cuda().eval()
+
+        self.diag = diag
+        self.tensor_product = tensor_product
+
+        if self.diag:
+            self.s = nn.Parameter(torch.zeros(num_features)).to("cuda")
+        else:
+            self.s = nn.Parameter(torch.randn(num_features, num_features) / (num_features ** 0.5)).to("cuda")
+        scale_state = torch.load(scale_ckpt, map_location='cpu')
+        self.s.data.copy_(scale_state['s'])
+
+    def get_scaled_feature(self, x):
+        x = self.transform(x)
+        feat = self.model(x).detach()
+        if self.tensor_product:
+            # Split features according to feat_dims
+            split_features = torch.split(feat, self.feat_dims, dim=1)
+            # Split scales according to feat_dims
+            split_scales = torch.split(self.s.sigmoid(), self.feat_dims, dim=0)
+            # Scale each axis
+            scaled_features = [f * s for f, s in zip(split_features, split_scales)]
+            # Compute tensor product
+            scaled_feat = scaled_features[0]
+            for i in range(1, len(scaled_features)):
+                scaled_feat = torch.einsum('bi,bj->bij', scaled_feat, scaled_features[i]).reshape(scaled_feat.shape[0], -1)
+        else:
+            if self.diag:
+                scaled_feat = feat * self.s.sigmoid()
+            else:
+                scaled_feat = feat @ self.s # (B, d) @ (d, d) -> (B, d)
+
+        return scaled_feat
+    
+    def score(self, images, feature_pool):
+        features = self.get_scaled_feature(images)
+
+        diversity_scores = []
+        for feat in features:
+            # feat_cand = torch.cat([feature_pool, feat.unsqueeze(0)], dim=0)
+            # calculate channelwise std of feat_cand
+            # std_feat_cand = torch.std(feat_cand, dim=0)
+            # diversity_score = std_feat_cand.mean().item()
+            # diversity_scores.append(diversity_score)
+            
+            # # calculate pairwise distance between feature_pool and feat using cosine similarity
+            cos_sim = F.cosine_similarity(feature_pool, feat.unsqueeze(0), dim=1)
+            if len(cos_sim) == 0:
+                diversity_score = 0.0
+            else:
+                diversity_score = (1 - cos_sim).min().item() # higher is more diverse
+            diversity_scores.append(diversity_score)
+
+            # calculate pairwise distance between feature_pool and feat
+            # dists = torch.norm(feature_pool - feat.unsqueeze(0), dim=1, p=2) # (N,)
+            # # diversity_score = dists.mean().item() # higher is more diverse
+            # if len(dists) == 0:
+            #     diversity_score = 0.0
+            # else:
+            #     diversity_score = dists.min().item() # higher is more diverse
+            # diversity_scores.append(diversity_score)
+
+        return diversity_scores
+        
+
+def do_diversity_score(*, images, feature_pool, **kwargs):
+    global REWARDS_DICT
+    if REWARDS_DICT["Diversity"] is None:
+        REWARDS_DICT["Diversity"] = DiversityModel(**kwargs)
+
+    with torch.no_grad():
+        diversity_result = REWARDS_DICT["Diversity"].score(images, feature_pool)
+    return diversity_result
+
