@@ -5,12 +5,14 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 import random
+import torchvision
 
 from diffusion.edm.model import EDM
 from diffusion.edm.fkd.fkd_rewards import DiversityModel
 
 from models import create_model
 from prior import get_prior
+from data import get_dataset, get_loader
 
 class DummyFeatureDataset:
     feat_dims = [1536] # NOTE hard coded for vit_giant_patch14_dinov2.lvd142m
@@ -113,7 +115,7 @@ class AFTModule(torch.nn.Module):
             feats = self.pretrained_model(self.transform_pretrained(x))
         return feats
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names):
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
@@ -128,6 +130,26 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     generator.to(DEVICE)
     generator.eval()
 
+    init_feature_pool_model = torch.empty((0, 2048)).to(DEVICE) # random features for demo; replace with real features
+    init_feature_pool_pretrained = torch.empty((0, 1536)).to(DEVICE) # random features for demo; replace with real features
+
+    if use_downstream:
+        train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True)[0]
+        train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=None)
+
+        for data in tqdm(train_loader):
+            if isinstance(data, (tuple, list)):
+                inputs, labels = data
+            else:
+                inputs = data
+
+            inputs = inputs.to(DEVICE)
+
+            feature_model = aft_module.get_model_feature(inputs)
+            feature_pretrained = aft_module.get_pretrained_feature(inputs)
+
+            init_feature_pool_model = torch.cat([init_feature_pool_model, feature_model], dim=0)
+            init_feature_pool_pretrained = torch.cat([init_feature_pool_pretrained, feature_pretrained], dim=0)
 
     FKD_ARGS = {
         "potential_type": "diff",
@@ -146,8 +168,8 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         "print_rewards": False, # print rewards during sampling
         "visualize_intermediate": False, # save results during sampling in output_dir
         "visualzie_x0": False, # save x0 prediction during sampling in output_dir
-        "feature_pool_model": torch.empty((0, 2048)).to(DEVICE), # random features for demo; replace with real features
-        "feature_pool_pretrained": torch.empty((0, 1536)).to(DEVICE), # random features for demo; replace with real features
+        "feature_pool_model": init_feature_pool_model,
+        "feature_pool_pretrained": init_feature_pool_pretrained,
         "aft_module": aft_module,
         "score": aft_score,
     }
@@ -196,9 +218,13 @@ if __name__ == "__main__":
     ).to('cuda')
 
     aft_score = "total"
+    use_downstream = True
     num_target_images = 3000
-    save_dir = f"./outputdir5/edm_aft_{aft_score}_steering/flowers-{seed}"
+    if use_downstream:
+        save_dir = f"./outputdir5/edm_aft_{aft_score}_steering_with_downstream/flowers-{seed}"
+    else:
+        save_dir = f"./outputdir5/edm_aft_{aft_score}_steering/flowers-{seed}"
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream)
