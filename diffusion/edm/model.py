@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
+from typing import Optional, Union
 
 from . import dnnlib
 from .fkd import FKD, FKD_ARGS_DEFAULTS, get_reward_function
@@ -120,7 +121,7 @@ class EDM(nn.Module):
     def sample_fk_steering(
         self,
         latents=None,
-        class_label: int | list | None = None,
+        class_label:  Optional[Union[int, list]] = None,
         fkd_args: dict = FKD_ARGS_DEFAULTS,
     ):
         device = next(iter(self.net.parameters())).device
@@ -134,17 +135,18 @@ class EDM(nn.Module):
         if latents is None:
             latents = torch.randn(
                 [
-                    self.batch_size,
+                    1,
                     self.net.img_channels,
                     self.net.img_resolution,
                     self.net.img_resolution,
                 ],
                 device=device,
             )
+            latents = latents.repeat(self.batch_size, 1, 1, 1)
         if class_label is None:
             if self.net.label_dim:
                 class_labels = torch.eye(self.net.label_dim, device=device)[
-                    torch.randint(self.net.label_dim, size=[self.batch_size], device=device)
+                    torch.randint(self.net.label_dim, (1, ), device=device).repeat(self.batch_size)
                 ]
         elif isinstance(class_label, int):
             if self.net.label_dim:
@@ -158,6 +160,7 @@ class EDM(nn.Module):
                 fkd_args["get_reward_fn"],  # "PixelReward", "ClassifierLossReward",
                 images=images,
                 prompts=class_label,
+                **fkd_args,
             )
             return torch.tensor(rewards, device=images.device, dtype=images.dtype)
 
@@ -240,8 +243,8 @@ class EDM(nn.Module):
                         img[0].save(f"{output_dir}/x0/class{class_label}_step{i}_{k}.png")
 
         return (
-            x_next.to(torch.float32),
-            class_labels.nonzero(as_tuple=True)[1],
+            x_next[0].unsqueeze(0).to(torch.float32),
+            class_labels.nonzero(as_tuple=True)[1][0].unsqueeze(0),
             self.fkd.population_rs.tolist(),
         )
 
