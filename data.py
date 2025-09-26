@@ -66,22 +66,17 @@ class SyntheticDataset(torch.utils.data.Dataset):
             self.labels = []
             for label, class_name in enumerate(class_names):
                 class_dir = os.path.join(directory, class_name)
+                class_files = sorted(glob.glob(os.path.join(class_dir, "*.png")))
                 if num_images is None:
-                    num_class_images = len(os.listdir(class_dir))
+                    num_class_images = len(class_files)
                 elif isinstance(num_images, int):
-                    num_class_images = num_images
+                    num_class_images = min(num_images, len(class_files))
                 elif isinstance(num_images, dict):
                     assert class_name in num_images, f'Class {class_name} not in num_images dict'
-                    num_class_images = num_images[class_name]
+                    num_class_images = min(num_images[class_name], len(class_files))
+                self.image_paths.extend(class_files[:num_class_images])
+                self.labels.extend([label] * num_class_images)
 
-                for idx in range(num_class_images):
-                    image_path = os.path.join(class_dir, f"{idx:06d}.png")
-                    if os.path.exists(image_path):
-                        self.image_paths.append(image_path)
-                        self.labels.append(label)
-                    else:
-                        print(f"Warning: {image_path} does not exist")
-        
         self.transform = transform
 
     def __len__(self):
