@@ -1,6 +1,7 @@
 import os
 import torch
 import yaml
+import argparse
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
@@ -105,6 +106,253 @@ class AFTModule(torch.nn.Module):
         prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
         return ce_loss + prior_loss
 
+    def _diversity(self, feature, feature_pool, method):
+        if len(feature_pool) == 0:
+            return 0.0
+        if method == "cos_min":
+            cos_sims = torch.nn.functional.cosine_similarity(feature_pool, feature.unsqueeze(0), dim=1)
+            diversity_score = (1-cos_sims).min().item()
+        elif method == "cos_mean":
+            cos_sims = torch.nn.functional.cosine_similarity(feature_pool, feature.unsqueeze(0), dim=1)
+            diversity_score = (1-cos_sims).mean().item()
+        elif method == "l2_min":
+            l2_dists = torch.norm(feature_pool - feature.unsqueeze(0), dim=1)
+            diversity_score = l2_dists.min().item()
+        elif method == "l2_mean":
+            l2_dists = torch.norm(feature_pool - feature.unsqueeze(0), dim=1)
+            diversity_score = l2_dists.mean().item()
+        else:
+            raise NotImplementedError(f"Unknown method {method}")
+        return diversity_score
+
+    def get_pretrained_diversity(self, x, feature_pool_pretrained, method):
+        features = self.get_pretrained_feature(x)
+        
+        scaled_feature_pool_pretrained = self.prior(feature_pool_pretrained)
+        scaled_features = self.prior(features)
+
+        diversity_scores = []
+        for scaled_feature in scaled_features:
+            diversity_score = self._diversity(scaled_feature, scaled_feature_pool_pretrained, method)
+            diversity_scores.append(diversity_score)      
+
+        diversity_scores = torch.tensor(diversity_scores, device=x.device)  
+        
+        return diversity_scores
+
+
+    def get_model_diversity(self, x, feature_pool_model, method):
+        features = self.get_model_feature(x)
+        
+        diversity_scores = []
+        for feature in features:
+            diversity_score = self._diversity(feature, feature_pool_model, method)
+            diversity_scores.append(diversity_score)
+
+        diversity_scores = torch.tensor(diversity_scores, device=x.device)
+
+        return diversity_scores
+
+    def get_pretrained_intra_diversity(self, x, target, feature_pool_pretrained, target_pool, method):
+        features = self.get_pretrained_feature(x)
+        
+        scaled_feature_pool_pretrained = self.prior(feature_pool_pretrained)
+        scaled_features = self.prior(features)
+
+        diversity_scores = []
+        for scaled_feature, tgt in zip(scaled_features, target):
+            tgt_indices = (target_pool == tgt).nonzero(as_tuple=True)[0]
+            diversity_score = self._diversity(scaled_feature, scaled_feature_pool_pretrained[tgt_indices], method)
+            diversity_scores.append(diversity_score)
+
+        diversity_scores = torch.tensor(diversity_scores, device=x.device)
+        
+        return diversity_scores
+               
+
+    def get_model_intra_diversity(self, x, target, feature_pool_model, target_pool, method):
+        features = self.get_model_feature(x)
+        
+        diversity_scores = []
+        for feature, tgt in zip(features, target):
+            tgt_indices = (target_pool == tgt).nonzero(as_tuple=True)[0]
+            diversity_score = self._diversity(feature, feature_pool_model[tgt_indices], method)
+            diversity_scores.append(diversity_score)
+
+        diversity_scores = torch.tensor(diversity_scores, device=x.device)
+
+        return diversity_scores
+
+    def get_pretrained_inter_intra_diversity(self, x, target, feature_pool_pretrained, target_pool, method):
+        features = self.get_pretrained_feature(x)
+
+        scaled_feature_pool_pretrained = self.prior(feature_pool_pretrained)
+        scaled_features = self.prior(features) 
+
+        diversity_scores = []
+        for scaled_feature, tgt in zip(scaled_features, target):
+            tgt_indices = (target_pool == tgt).nonzero(as_tuple=True)[0]
+            non_tgt_indices = (target_pool != tgt).nonzero(as_tuple=True)[0]
+
+            intra_diversity_score = self._diversity(scaled_feature, scaled_feature_pool_pretrained[tgt_indices], method)
+            inter_diversity_score = self._diversity(scaled_feature, scaled_feature_pool_pretrained[non_tgt_indices], method)
+
+            diversity_scores.append(inter_diversity_score / (intra_diversity_score + 1e-8)) # avoid division by zero
+        diversity_scores = torch.tensor(diversity_scores, device=x.device)
+        
+        return diversity_scores
+
+    def get_model_inter_intra_diversity(self, x, target, feature_pool_model, target_pool, method):
+        features = self.get_model_feature(x)
+        diversity_scores = []
+        for feature, tgt in zip(features, target):
+            tgt_indices = (target_pool == tgt).nonzero(as_tuple=True)[0]
+            non_tgt_indices = (target_pool != tgt).nonzero(as_tuple=True)[0]
+
+            intra_diversity_score = self._diversity(feature, feature_pool_model[tgt_indices], method)
+            inter_diversity_score = self._diversity(feature, feature_pool_model[non_tgt_indices], method)
+
+            diversity_scores.append(inter_diversity_score / (intra_diversity_score + 1e-8)) # avoid division by zero
+        diversity_scores = torch.tensor(diversity_scores, device=x.device)
+        return diversity_scores
+
+
+    def aft_score_times_pretrained_diversity(self, x, target, feature_pool_model, feature_pool_pretrained, target_pool, method):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, target)
+
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        
+        loss = ce_loss + prior_loss
+
+        scaled_feature_pool_pretrained = self.prior(feature_pool_pretrained)
+        scaled_features = self.prior(feats_pretrained)
+
+        
+        diversity_score = self._diversity(scaled_features[0], scaled_feature_pool_pretrained, method)
+
+        return loss * diversity_score
+
+
+    def aft_score_times_model_diversity(self, x, target, feature_pool_model, feature_pool_pretrained, target_pool, method):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, target)
+
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        
+        loss = ce_loss + prior_loss
+
+        diversity_score = self._diversity(feats[0], feature_pool_model, method)
+
+        return loss * diversity_score
+
+
+    def aft_score_times_pretrained_intra_diversity(self, x, target, feature_pool_model, feature_pool_pretrained, target_pool, method):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, target)
+
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        
+        loss = ce_loss + prior_loss
+
+        scaled_feature_pool_pretrained = self.prior(feature_pool_pretrained)
+        scaled_features = self.prior(feats_pretrained)
+
+        tgt_indices = (target_pool == target[0]).nonzero(as_tuple=True)[0]
+        diversity_score = self._diversity(scaled_features[0], scaled_feature_pool_pretrained[tgt_indices], method)
+
+        return loss * diversity_score
+
+    def aft_score_times_model_intra_diversity(self, x, target, feature_pool_model, feature_pool_pretrained, target_pool, method):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, target)
+
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        
+        loss = ce_loss + prior_loss
+
+        tgt_indices = (target_pool == target[0]).nonzero(as_tuple=True)[0]
+        diversity_score = self._diversity(feats[0], feature_pool_model[tgt_indices], method)
+
+        return loss * diversity_score
+
+    def aft_score_times_pretrained_inter_intra_diversity(self, x, target, feature_pool_model, feature_pool_pretrained, target_pool, method):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, target)
+
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        
+        loss = ce_loss + prior_loss
+
+        scaled_feature_pool_pretrained = self.prior(feature_pool_pretrained)
+        scaled_features = self.prior(feats_pretrained)
+
+        tgt_indices = (target_pool == target[0]).nonzero(as_tuple=True)[0]
+        non_tgt_indices = (target_pool != target[0]).nonzero(as_tuple=True)[0]
+
+        intra_diversity_score = self._diversity(scaled_features[0], scaled_feature_pool_pretrained[tgt_indices], method)
+        inter_diversity_score = self._diversity(scaled_features[0], scaled_feature_pool_pretrained[non_tgt_indices], method)
+
+        diversity_score = inter_diversity_score / (intra_diversity_score + 1e-8) # avoid division by zero
+
+        return loss * diversity_score
+
+    def aft_score_times_model_inter_intra_diversity(self, x, target, feature_pool_model, feature_pool_pretrained, target_pool, method):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, target)
+
+        new_feature_pool_model = torch.cat([feature_pool_model, feats], dim=0)
+        new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained], dim=0)
+        prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+        
+        loss = ce_loss + prior_loss
+
+        tgt_indices = (target_pool == target[0]).nonzero(as_tuple=True)[0]
+        non_tgt_indices = (target_pool != target[0]).nonzero(as_tuple=True)[0]
+
+        intra_diversity_score = self._diversity(feats[0], feature_pool_model[tgt_indices], method)
+        inter_diversity_score = self._diversity(feats[0], feature_pool_model[non_tgt_indices], method)
+
+        diversity_score = inter_diversity_score / (intra_diversity_score + 1e-8) # avoid division by zero
+
+        return loss * diversity_score
+
+
+
     def get_model_feature(self, x):
         with torch.no_grad():
             _, feats = self.model(self.transform(x), return_feat=True)
@@ -132,6 +380,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
 
     init_feature_pool_model = torch.empty((0, 2048)).to(DEVICE) # random features for demo; replace with real features
     init_feature_pool_pretrained = torch.empty((0, 1536)).to(DEVICE) # random features for demo; replace with real features
+    init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
 
     if use_downstream:
         train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True)[0]
@@ -150,6 +399,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
 
             init_feature_pool_model = torch.cat([init_feature_pool_model, feature_model], dim=0)
             init_feature_pool_pretrained = torch.cat([init_feature_pool_pretrained, feature_pretrained], dim=0)
+            init_target_pool = torch.cat([init_target_pool, labels.to(DEVICE)], dim=0)
 
     FKD_ARGS = {
         "potential_type": "diff",
@@ -170,6 +420,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         "visualzie_x0": False, # save x0 prediction during sampling in output_dir
         "feature_pool_model": init_feature_pool_model,
         "feature_pool_pretrained": init_feature_pool_pretrained,
+        "target_pool": init_target_pool,
         "aft_module": aft_module,
         "score": aft_score,
     }
@@ -203,10 +454,38 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
 
 
 if __name__ == "__main__":
-    seed = 0
-    edm_ckpt = "/NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl"
-    model_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/model.pt"
-    prior_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/prior.pt"
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ('yes', 'true', 't', '1'):
+            return True
+        elif v.lower() in ('no', 'false', 'f', '0'):
+            return False
+        else:
+            raise argparse.ArgumentTypeError('Boolean value expected.')
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--edm_ckpt', type=str, required=True, help='Path to EDM checkpoint')
+    parser.add_argument('--model_ckpt', type=str, required=True, help='Path to AFT model checkpoint')
+    parser.add_argument('--prior_ckpt', type=str, required=True, help='Path to AFT prior checkpoint')
+    parser.add_argument('--aft_score', type=str, default='total', help='AFT score to use')
+    parser.add_argument('--num_target_images', type=int, default=3000, help='Number of target images to generate')
+    parser.add_argument('--use_downstream', type=str2bool, default=False, help='Whether to use downstream data for feature pool initialization')
+    parser.add_argument('--save_dir', type=str, required=True, help='Directory to save generated images')
+    args = parser.parse_args()
+
+    print("generating data with edm fk steering...")
+
+    # seed = 0
+    # edm_ckpt = "/NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl"
+    # model_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/model.pt"
+    # prior_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/prior.pt"
+
+    seed = args.seed
+    edm_ckpt = args.edm_ckpt
+    model_ckpt = args.model_ckpt
+    prior_ckpt = args.prior_ckpt
 
     aft_module = AFTModule(
         model="resnet50.a1_in1k",
@@ -217,13 +496,15 @@ if __name__ == "__main__":
         prior_ckpt=prior_ckpt,
     ).to('cuda')
 
-    aft_score = "total"
-    use_downstream = True
-    num_target_images = 3000
-    if use_downstream:
-        save_dir = f"./outputdir5/edm_aft_{aft_score}_steering_with_downstream/flowers-{seed}"
-    else:
-        save_dir = f"./outputdir5/edm_aft_{aft_score}_steering/flowers-{seed}"
+    # aft_score = "total"
+    # use_downstream = True
+    # num_target_images = 3000
+
+    aft_score = args.aft_score
+    use_downstream = args.use_downstream
+    num_target_images = args.num_target_images
+    save_dir = args.save_dir
+    
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]

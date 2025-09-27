@@ -130,7 +130,8 @@ def get_reward_function(reward_name, images, prompts, metric_to_chase="overall_s
         targets = kwargs.pop("targets", None)
         feature_pool_model = kwargs.pop("feature_pool_model", None)
         feature_pool_pretrained = kwargs.pop("feature_pool_pretrained", None)
-        return do_aft_score(images=images, aft_module=aft_module, score=score, targets=targets, feature_pool_model=feature_pool_model, feature_pool_pretrained=feature_pool_pretrained)
+        target_pool = kwargs.pop("target_pool", None)
+        return do_aft_score(images=images, aft_module=aft_module, score=score, targets=targets, feature_pool_model=feature_pool_model, feature_pool_pretrained=feature_pool_pretrained, target_pool=target_pool)
 
     else:
         raise ValueError(f"Unknown metric: {reward_name}")
@@ -453,7 +454,7 @@ def do_diversity_score(*, images, feature_pool, **kwargs):
     return diversity_result
 
 
-def do_aft_score(*, images, aft_module, score, targets=None, feature_pool_model=None, feature_pool_pretrained=None, **kwargs):
+def do_aft_score(*, images, aft_module, score, targets=None, feature_pool_model=None, feature_pool_pretrained=None, target_pool=None,**kwargs):
     if score == "ce":
         rewards = aft_module.get_ce_loss(images, targets, reduction="none").detach().cpu().tolist()
     elif score == "aft":
@@ -466,6 +467,91 @@ def do_aft_score(*, images, aft_module, score, targets=None, feature_pool_model=
         for image, target in zip(images, targets):
             reward = aft_module.get_total_loss(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained).detach().cpu().item()
             rewards.append(reward)
+    elif score == "pretrained_diversity_cos_min":
+        rewards = aft_module.get_pretrained_diversity(images, feature_pool_pretrained, method="cos_min")
+    elif score == "pretrained_diversity_l2_min":
+        rewards = aft_module.get_pretrained_diversity(images, feature_pool_pretrained, method="l2_min")
+    elif score == "model_diversity_cos_min":
+        rewards = aft_module.get_model_diversity(images, feature_pool_model, method="cos_min")
+    elif score == "model_diversity_l2_min":
+        rewards = aft_module.get_model_diversity(images, feature_pool_model, method="l2_min")
+    elif score == "pretrained_intra_diversity_cos_min":
+        rewards = aft_module.get_pretrained_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="cos_min")
+    elif score == "pretrained_intra_diversity_l2_min":
+        rewards = aft_module.get_pretrained_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="l2_min")
+    elif score == "model_intra_diversity_cos_min":
+        rewards = aft_module.get_model_intra_diversity(images, targets, feature_pool_model, target_pool, method="cos_min")
+    elif score == "model_intra_diversity_l2_min":
+        rewards = aft_module.get_model_intra_diversity(images, targets, feature_pool_model, target_pool, method="l2_min")
+    elif score == "pretrained_inter_intra_diversity_cos_min":
+        rewards = aft_module.get_pretrained_inter_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="cos_min")
+    elif score == "pretrained_inter_intra_diversity_l2_min":
+        rewards = aft_module.get_pretrained_inter_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="l2_min")    
+    elif score == "model_inter_intra_diversity_cos_min":
+        rewards = aft_module.get_model_inter_intra_diversity(images, targets, feature_pool_model, target_pool, method="cos_min")
+    elif score == "model_inter_intra_diversity_l2_min":
+        rewards = aft_module.get_model_inter_intra_diversity(images, targets, feature_pool_model, target_pool, method="l2_min")
+    elif score == "aft_times_pretrained_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_pretrained_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_model_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_model_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_pretrained_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_pretrained_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_model_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_model_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_pretrained_inter_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_pretrained_inter_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_model_inter_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min").detach().cpu().item()
+            rewards.append(reward)
+    elif score == "aft_times_model_inter_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min").detach().cpu().item()
+            rewards.append(reward)
+
     else:
         raise ValueError(f"Unknown score: {score}")
     return rewards
