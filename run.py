@@ -44,9 +44,13 @@ def main(
     num_images=None,
     model_ckpt=None,
     prior_ckpt=None,
+    original_feature_path=None,
+    synthetic_feature_path=None,
     feature_path_postfix="",
+    num_synthetic_images=None,
     **kwargs,
 ):
+    print("Starting training...")
     assert no_augment or method == "init", "Must not use augmentation unless method == init"
     u.set_seed(seed)
     if dataset in ["mnli", "qqp", "qnli"]:
@@ -85,6 +89,15 @@ def main(
     raw_train_ds, raw_test_ds = get_dataset(
         dataset, get_transform, tokenizer, no_augment=no_augment, cache=cache
     )
+
+    print(feature_path_postfix)
+    if num_images is not None:
+        num_images = int(num_images)
+
+    if num_synthetic_images is not None:
+        indices = list(range(int(num_synthetic_images)))
+    else:
+        indices = None
     # pretrained models
     if pretrained_models not in [None, "none"]:
         pretrained_models = pretrained_models.split(",")
@@ -92,12 +105,16 @@ def main(
             pretrained_models = (pretrained_models,)
         pretrained_models = [model.strip() for model in pretrained_models]
         print(f"Pretrained models: {pretrained_models}")
-        if method == "ft":
-            feature_paths = [f"./features/{model}_{dataset}_ae.pt" for model in pretrained_models]
+
+        if original_feature_path is not None:
+            feature_paths = [original_feature_path.replace(pretrained_models[0], model) for model in pretrained_models]
         else:
-            feature_paths = [f"./features/{model}_{dataset}.pt" for model in pretrained_models]
-        for path in feature_paths:
-            assert os.path.exists(path), f"Feature path {path} does not exist"
+            if method == "ft":
+                feature_paths = [f"./features/{model}_{dataset}_ae.pt" for model in pretrained_models]
+            else:
+                feature_paths = [f"./features/{model}_{dataset}.pt" for model in pretrained_models]
+            for path in feature_paths:
+                assert os.path.exists(path), f"Feature path {path} does not exist"
         # annotate dataset with features
         train_ds = FeatureDataset(
             raw_train_ds, feature_paths, indices=train_indices, split="train"
@@ -136,7 +153,10 @@ def main(
             #     synthetic_feature_paths = [
             #         f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
             #     ]
-            synthetic_feature_paths = [f"./features/{model}_{dataset}_{feature_path_postfix}.pt" for model in pretrained_models]
+            if synthetic_feature_path is not None:
+                synthetic_feature_paths = [synthetic_feature_path.replace(pretrained_models[0], model) for model in pretrained_models]
+            else:
+                synthetic_feature_paths = [f"./features/{model}_{dataset}_{feature_path_postfix}.pt" for model in pretrained_models]
 
 
             # Check if synthetic feature files exist
@@ -144,11 +164,11 @@ def main(
                 assert os.path.exists(path), f"Synthetic feature path {path} does not exist"
 
             synthetic_ds = FeatureDataset(
-                synthetic_raw_ds, synthetic_feature_paths, indices=None, split="train"
+                synthetic_raw_ds, synthetic_feature_paths, indices=indices, split="train"
             )
         else:
             # Use dummy features for synthetic data
-            synthetic_ds = FeatureDataset(synthetic_raw_ds, None, indices=None, split="train")
+            synthetic_ds = FeatureDataset(synthetic_raw_ds, None, indices=indices, split="train")
 
         # Concatenate original training dataset with synthetic dataset
         train_ds = ConcatFeatureDataset(train_ds, synthetic_ds)
@@ -225,7 +245,10 @@ def main(
                 #     synthetic_feature_paths = [
                 #         f"./features/{model}_{dataset}_sdxl_no_class.pt" for model in pretrained_models
                 #     ]
-                synthetic_feature_paths = [f"./features/{model}_{dataset}_{feature_path_postfix}.pt" for model in pretrained_models]
+                if synthetic_feature_path is not None:
+                    synthetic_feature_paths = [synthetic_feature_path.replace(pretrained_models[0], model) for model in pretrained_models]
+                else:
+                    synthetic_feature_paths = [f"./features/{model}_{dataset}_{feature_path_postfix}.pt" for model in pretrained_models]
 
 
                 for path in synthetic_feature_paths:
@@ -234,13 +257,13 @@ def main(
                 synthetic_ds = FeatureDataset(
                     synthetic_raw_ds,
                     synthetic_feature_paths,
-                    indices=None,
+                    indices=indices,
                     split="train",
                     feature_only=True,
                 )
             else:
                 synthetic_ds = FeatureDataset(
-                    synthetic_raw_ds, None, indices=None, split="train", feature_only=True
+                    synthetic_raw_ds, None, indices=indices, split="train", feature_only=True
                 )
 
             train_ds = ConcatFeatureDataset(train_ds, synthetic_ds)
@@ -363,9 +386,9 @@ def main(
     }
     if use_wandb:
         with wandb.init(project="transfer", config=args, save_code=True, name=run_name) as wandb_run:
-            train(loaders, model, init_model, prior, wandb_run, hypers)
+            last_acc, best_acc = train(loaders, model, init_model, prior, wandb_run, hypers)
     else:
-        train(loaders, model, init_model, prior, None, hypers)
+        last_acc, best_acc = train(loaders, model, init_model, prior, None, hypers)
 
     # save model
     if ckpt_dir is not None:
@@ -375,6 +398,9 @@ def main(
         if hasattr(prior, "state_dict"):
             torch.save(prior.state_dict(), f"{ckpt_dir}/prior.pt")
 
+        with open(f"{ckpt_dir}/results.txt", "w") as f:
+            f.write(f"Last test acc: {last_acc:.3f}\n")
+            f.write(f"Best test acc: {best_acc:.3f}\n")
 
 if __name__ == "__main__":
     fire.Fire(main)
