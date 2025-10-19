@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 import random
+import argparse
 
 from diffusion.edm.model import EDM
 from diffusion.edm.fkd.fkd_rewards import DiversityModel
@@ -14,9 +15,10 @@ def main(seed, edm_ckpt, num_target_images, save_dir, class_names):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
-        batch_size: 4
+        batch_size: 1
         dtype: float16
         num_steps: 60
+        S_churn: 40
         """
 
     config = yaml.safe_load(config)
@@ -48,10 +50,24 @@ def main(seed, edm_ckpt, num_target_images, save_dir, class_names):
 
 
 if __name__ == "__main__":
-    seed = 0
-    edm_ckpt = "/NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl"
-    num_target_images = 3000
-    save_dir = f"./outputdir5/edm/flowers-{seed}"
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--edm_ckpt', type=str, required=True, help='Path to EDM checkpoint')
+    parser.add_argument('--num_target_images', type=int, default=3000, help='Number of target images to generate')
+    parser.add_argument('--save_dir', type=str, required=True, help='Directory to save generated images')
+    args = parser.parse_args()
+
+    print("generating data with edm fk steering...")
+
+    seed = args.seed
+    edm_ckpt = args.edm_ckpt
+    num_target_images = args.num_target_images
+    save_dir = args.save_dir
+    # seed = 0
+    # edm_ckpt = "/NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl"
+    # num_target_images = 100000
+    # save_dir = f"./outputdir7/edm_no_steer/flowers-{seed}"
+
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
