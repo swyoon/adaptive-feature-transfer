@@ -363,7 +363,7 @@ class AFTModule(torch.nn.Module):
             feats = self.pretrained_model(self.transform_pretrained(x))
         return feats
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream):
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
@@ -414,7 +414,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         "latent_to_decode_fn": lambda x: x,  # identity for EDM (already image-space)
         "get_reward_fn": "AFT",  # "ClassifierLoss" will be defined later
         "cls_model": None,  # it is required when using "ClassifierLoss"
-        "use_smc": True,
+        "use_smc": True if not no_steering else False,
         "output_dir": "./outputs/generated/fkd_results", # modify
         "print_rewards": False, # print rewards during sampling
         "visualize_intermediate": False, # save results during sampling in output_dir
@@ -474,6 +474,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_target_images', type=int, default=3000, help='Number of target images to generate')
     parser.add_argument('--use_downstream', type=str2bool, default=False, help='Whether to use downstream data for feature pool initialization')
     parser.add_argument('--save_dir', type=str, required=True, help='Directory to save generated images')
+    parser.add_argument('--no_steering', action='store_true', help='If set, do not use FKD steering (for ablation)')
     args = parser.parse_args()
 
     print("generating data with edm fk steering...")
@@ -509,4 +510,4 @@ if __name__ == "__main__":
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering)
