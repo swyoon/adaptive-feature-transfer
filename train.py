@@ -36,6 +36,7 @@ def train_epoch(loader, model, criterion, prior, optimizer, stop_prior_grad=Fals
                 inputs = inputs.cuda()
             pretrained_feats, targets = pretrained_feats.cuda(), targets.cuda()
         optimizer.zero_grad()
+            
         outputs, feats = model(inputs, return_feat=True)
         if freeze_model:
             outputs = outputs.detach()
@@ -114,15 +115,7 @@ def evaluate_model(loader, model, criterion=nn.CrossEntropyLoss, max_test_points
     return avg_loss, accuracy, ent
 
 
-def train_model(model, loaders, optimizer='sgd', steps=1000, eval_steps=500, lr=1e-3, prior_lr=1e-2, pretrained_init=None, prior=UniformPrior(), prior_pretrain_steps=0, prior_freq=1, freeze_init=False, stop_prior_grad=False, wandb_run=None, wd=0, **kwargs):
-    if optimizer == 'sgd':
-        optim_class = partial(optim.SGD, momentum=0.9)
-    elif optimizer == 'adam':
-        optim_class = optim.Adam
-    else:
-        raise ValueError(f'Unknown optimizer {optimizer}')
-    print(f'Optimizer: {optimizer}')
-    
+def train_model(model, loaders, optimizer='sgd', scheduler=None, steps=1000, eval_steps=500, lr=1e-3, prior_lr=1e-2, pretrained_init=None, prior=UniformPrior(), prior_pretrain_steps=0, prior_freq=1, freeze_init=False, stop_prior_grad=False, wandb_run=None, wd=0, step_offset=0, **kwargs):
     n_epochs = steps / len(loaders[0])
     n_epochs = int(n_epochs + 0.5)
     model = model.cuda()
@@ -132,59 +125,101 @@ def train_model(model, loaders, optimizer='sgd', steps=1000, eval_steps=500, lr=
     criterion = nn.CrossEntropyLoss
     train_loader, test_loader = loaders
 
-    model_params = [p for p in model.parameters()]
-    prior_params = []
-    if isinstance(prior, nn.Module):
-        prior.cuda()
-        prior_params = [p for p in prior.parameters()]
+    def infinite_loader(loader):
+        while True:
+            for batch in loader:
+                yield batch
 
-    param_groups = [{'params': model_params, 'lr': lr, 'weight_decay': wd}]
-    if len(prior_params) > 0:
-        param_groups.append({'params': prior_params, 'lr': prior_lr})
-    optimizer = optim_class(param_groups)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
+    train_loader = infinite_loader(train_loader)
+
+    # Check if optimizer is a string (need to create) or existing torch optimizer
+    if isinstance(optimizer, str):
+        print(f'Creating optimizer: {optimizer}')
+        if optimizer == 'sgd':
+            optim_class = partial(optim.SGD, momentum=0.9)
+        elif optimizer == 'adam':
+            optim_class = optim.Adam
+        else:
+            raise ValueError(f'Unknown optimizer {optimizer}')
+        
+        model_params = [p for p in model.parameters()]
+        param_groups = [{'params': model_params, 'lr': lr, 'weight_decay': wd}]
+        
+        # Add prior parameters if they exist
+        if isinstance(prior, nn.Module):
+            prior.cuda()
+            prior_params = [p for p in prior.parameters()]
+            if len(prior_params) > 0:
+                param_groups.append({'params': prior_params, 'lr': prior_lr, 'weight_decay': 0})
+        
+        optimizer = optim_class(param_groups)
+    else:
+        print("Using existing optimizer")
+    
+    # Check if scheduler is None (need to create) or existing torch scheduler
+    if scheduler is None:
+        print("Creating scheduler")
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps)
+    else:
+        print("Using existing scheduler")
 
     moving_avg = MovingAverage()
     steps_since_eval = 0
-    steps_so_far = 0
+    steps_so_far = step_offset
 
-    for epoch in (pbar := tqdm(range(n_epochs))):
-        for step_count, batch in enumerate(train_loader):
-            # prior_freq steps of training the prior, then 1 step of training the model
-            freeze_model = (step_count % prior_freq) > 0
-            metrics = train_epoch([batch], model, criterion, prior, optimizer, stop_prior_grad, freeze_model)
-            moving_avg.update(metrics)
+    best_acc = 0
+    for step in (pbar := tqdm(range(steps))):
+        batch = next(train_loader)
+        # for step_count, batch in enumerate(train_loader):
+        # prior_freq steps of training the prior, then 1 step of training the model
+        freeze_model = (step % prior_freq) > 0
+        metrics = train_epoch([batch], model, criterion, prior, optimizer, stop_prior_grad, freeze_model)
+        moving_avg.update(metrics)
+        
+        steps_since_eval += 1
+        steps_so_far += 1
+
+        if steps_since_eval >= eval_steps:
+            averaged_metrics = moving_avg.average()
+            train_acc = averaged_metrics['train_acc']
+            test_ce, test_acc, test_ent = evaluate_model(test_loader, model, criterion, max_test_points=3000)
+            test_prior_acc = prior.get_test_acc()
+            desc = f"Train acc: {train_acc:.1f}, Test acc: {test_acc:.1f}"
+            if 'prior_agree' in averaged_metrics:
+                desc += f", Prior agree: {averaged_metrics['prior_agree']:.1f}"
             
-            steps_so_far += 1
-            steps_since_eval += 1
+            epoch = step // len(loaders[0])
+
+            averaged_metrics.update({'test_acc': test_acc, 'test_ce': test_ce, 'test_ent': test_ent, 'epoch': epoch, 'steps': steps_so_far, 'prior_test_acc': test_prior_acc})
+            pbar.set_description(desc)
             
-            if steps_since_eval >= eval_steps:
-                averaged_metrics = moving_avg.average()
-                train_acc = averaged_metrics['train_acc']
-                test_ce, test_acc, test_ent = evaluate_model(test_loader, model, criterion, max_test_points=3000)
-                test_prior_acc = prior.get_test_acc()
-                desc = f"Train acc: {train_acc:.1f}, Test acc: {test_acc:.1f}"
-                if 'prior_agree' in averaged_metrics:
-                    desc += f", Prior agree: {averaged_metrics['prior_agree']:.1f}"
-                
-                averaged_metrics.update({'test_acc': test_acc, 'test_ce': test_ce, 'test_ent': test_ent, 'epoch': epoch, 'steps': steps_so_far, 'prior_test_acc': test_prior_acc})
-                pbar.set_description(desc)
-                
-                if wandb_run:
-                    wandb_run.log(averaged_metrics)
-                moving_avg.reset()  # Reset the moving average after logging
-                steps_since_eval = 0
-        scheduler.step()
+            if wandb_run:
+                wandb_run.log(averaged_metrics, step=steps_so_far)
+            moving_avg.reset()  # Reset the moving average after logging
+            steps_since_eval = 0
+
+            if test_acc > best_acc:
+                best_acc = test_acc
+                   
+        if scheduler is not None:
+            scheduler.step()
     
     print('Finished training, evaluating...')
     test_ce, test_acc, test_ent = evaluate_model(test_loader, model, criterion)
     if wandb_run:
-        wandb_run.log({'test_acc': test_acc, 'test_ce': test_ce, 'test_ent': test_ent, 'epoch': epoch, 'steps': steps_so_far})
+        wandb_run.log({'test_acc': test_acc, 'test_ce': test_ce, 'test_ent': test_ent, 'epoch': epoch, 'steps': steps_so_far}, step=steps_so_far)
         
     print(f'Final test acc: {test_acc:.3f}')
+
+    return test_acc, best_acc
 
 
 def train(loaders, model, init_model, prior, wandb_run, hypers):
     print(f'Trainable parameters: {sum([p.numel() for p in model.parameters()])/1e6:.2g}M')
     model.cuda()
-    train_model(model, loaders, prior=prior, pretrained_init=init_model, wandb_run=wandb_run, **hypers)
+    optimizer = hypers.pop("optimizer", None)
+    scheduler = hypers.pop("scheduler", None)
+    last_acc, best_acc = train_model(model, loaders, prior=prior, pretrained_init=init_model, wandb_run=wandb_run, 
+                                   optimizer=optimizer, scheduler=scheduler,
+                                   **hypers)
+    return last_acc, best_acc
