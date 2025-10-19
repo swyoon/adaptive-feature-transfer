@@ -369,6 +369,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         network_pkl: {edm_ckpt}
         batch_size: 1
         dtype: float16
+        S_churn: 40
         """
 
     config = yaml.safe_load(config)
