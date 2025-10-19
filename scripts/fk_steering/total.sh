@@ -12,9 +12,9 @@ num_target_images=3000
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    image_dir="./outputdir5/edm_aft_${aft_score}_steering_with_downstream/flowers-${seed}"
+    image_dir="./artifacts/251015/edm_aft_${aft_score}_steering_with_downstream/flowers-${seed}"
 else
-    image_dir="./outputdir5/edm_aft_${aft_score}_steering/flowers-${seed}"
+    image_dir="./artifacts/251015/edm_aft_${aft_score}_steering/flowers-${seed}"
 fi
 
 # fixed
@@ -29,7 +29,7 @@ else
 fi
 
 class_file="./classes/${dataset_name}.txt"
-feature_path="./features/${pretrained_model}_${dataset_name}_${steer_method}.pt"
+feature_path="./features/${pretrained_model}_${dataset_name}_${steer_method}_${num_target_images}.pt"
 
 # fixed
 train_method=aft
@@ -83,6 +83,6 @@ CUDA_VISIBLE_DEVICES=${device} python run.py \
     --auxiliary_dataset=${dataset_name} \
     --directory=${image_dir} \
     --class_file=${class_file} \
-    --feature_path_postfix=${steer_method} \
+    --feature_path_postfix="${steer_method}_${num_target_images}" \
     --model_ckpt=${model_ckpt} \
     --prior_ckpt=${prior_ckpt}
