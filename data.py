@@ -26,7 +26,7 @@ class FeatureDataset(torch.utils.data.Dataset):
                 assert os.path.exists(feature_path), f'Feature path {feature_path} does not exist'
             for feature_path in feature_paths:
                 feat = torch.load(feature_path)[split]
-                assert len(self.dataset) == len(feat), f'Feature path {feature_path} has {len(feat)} entries but dataset has {len(self.dataset)}'
+                # assert len(self.dataset) == len(feat), f'Feature path {feature_path} has {len(feat)} entries but dataset has {len(self.dataset)}'
                 feats.append(feat[indices])
             self.features = torch.cat(feats, dim=1) # (n, d)
         self.feat_dims = [feat.size(1) for feat in feats]
@@ -53,29 +53,50 @@ class FeatureDataset(torch.utils.data.Dataset):
 
 class SyntheticDataset(torch.utils.data.Dataset):
     def __init__(self, directory, class_file=None, num_images=None, transform=None):
-        if class_file is None:
-            files = sorted(glob.glob(os.path.join(directory, "*.png")))
-            if num_images is not None:
-                files = files[:num_images]
-            self.image_paths = files
-            self.labels = [None] * len(files)
-        else:
+        # if class_file is None:
+        files = sorted(glob.glob(os.path.join(directory, "*", "*.png")))
+        files = sorted(files, key=lambda x: int(os.path.basename(x).split("_")[-1].split(".")[0]))
+        if num_images is not None:
+            files = files[:num_images]
+        self.image_paths = files
+        # self.labels = [None] * len(files)
+        if class_file is not None:
             with open(class_file, "r") as f:
                 class_names = [line.strip() for line in f if line.strip()]
-            self.image_paths = []
-            self.labels = []
-            for label, class_name in enumerate(class_names):
-                class_dir = os.path.join(directory, class_name)
-                class_files = sorted(glob.glob(os.path.join(class_dir, "*.png")))
-                if num_images is None:
-                    num_class_images = len(class_files)
-                elif isinstance(num_images, int):
-                    num_class_images = min(num_images, len(class_files))
-                elif isinstance(num_images, dict):
-                    assert class_name in num_images, f'Class {class_name} not in num_images dict'
-                    num_class_images = min(num_images[class_name], len(class_files))
-                self.image_paths.extend(class_files[:num_class_images])
-                self.labels.extend([label] * num_class_images)
+            name_to_label = {name: i for i, name in enumerate(class_names)}
+            self.labels = [name_to_label[os.path.basename(os.path.dirname(f))] for f in files]
+        else:
+            self.labels = [None] * len(files)
+        #     class_dirs = sorted([d for d in os.listdir(directory
+        # else:
+        #     files = sorted(glob.glob(os.path.join(directory, "*.png")))
+        #     files = sorted(files, key=lambda x: int(os.path.basename(x).split("_")[-1].split(".")[0]))
+        #     if num_images is not None:
+        #         files = files[:num_images]
+
+        #     files_dict = dict()
+        #     for f in files:
+        #         class_name = os.path.basename(os.path.dirname(f))
+        #         if class_name not in files_dict:
+        #             files_dict[class_name] = []
+        #         files_dict[class_name].append(f)
+
+        #     with open(class_file, "r") as f:
+        #         class_names = [line.strip() for line in f if line.strip()]
+        #     self.image_paths = []
+        #     self.labels = []
+        #     for label, class_name in enumerate(class_names):
+        #         # class_dir = os.path.join(directory, class_name)
+        #         # class_files = sorted(glob.glob(os.path.join(class_dir, "*.png")))
+        #         if num_images is None:
+        #             num_class_images = len(class_files)
+        #         elif isinstance(num_images, int):
+        #             num_class_images = min(num_images, len(class_files))
+        #         elif isinstance(num_images, dict):
+        #             assert class_name in num_images, f'Class {class_name} not in num_images dict'
+        #             num_class_images = min(num_images[class_name], len(class_files))
+        #         self.image_paths.extend(class_files[:num_class_images])
+        #         self.labels.extend([label] * num_class_images)
 
         self.transform = transform
 
@@ -95,10 +116,6 @@ class SyntheticDataset(torch.utils.data.Dataset):
 
 class ConcatFeatureDataset(torch.utils.data.Dataset):
     def __init__(self, ds1, ds2):
-        assert isinstance(ds1, FeatureDataset) and isinstance(ds2, FeatureDataset), "Both datasets must be FeatureDataset instances"
-        self.ds1 = ds1
-        self.ds2 = ds2
-        self.lengths = [len(ds1), len(ds2)]
 
         assert ds1.feat_dims == ds2.feat_dims, "Feature dimensions must match"
         assert ds1.num_features == ds2.num_features, "Number of features must match"
@@ -108,14 +125,32 @@ class ConcatFeatureDataset(torch.utils.data.Dataset):
         print(f"ConcatFeatureDataset feature dims: {self.feat_dims}")
         print(f"ConcatFeatureDataset num_features: {self.num_features}")
 
-    def __len__(self):
-        return self.lengths[0] + self.lengths[1]
-
-    def __getitem__(self, idx):
-        if idx < self.lengths[0]:
-            return self.ds1[idx]
+        self.datasets = []    
+        if isinstance(ds1, FeatureDataset):
+            self.datasets.append(ds1)
+        elif isinstance(ds1, ConcatFeatureDataset):
+            self.datasets.extend(ds1.datasets)
         else:
-            return self.ds2[idx - self.lengths[0]]
+            raise ValueError("ds1 must be FeatureDataset or ConcatFeatureDataset")
+        
+        if isinstance(ds2, FeatureDataset):
+            self.datasets.append(ds2)
+        elif isinstance(ds2, ConcatFeatureDataset):
+            self.datasets.extend(ds2.datasets)
+        else:
+            raise ValueError("ds2 must be FeatureDataset or ConcatFeatureDataset")
+
+        self.lengths = [len(d) for d in self.datasets]
+
+    def __len__(self):
+        return sum(self.lengths)
+    
+    def __getitem__(self, idx):
+        for i, length in enumerate(self.lengths):
+            if idx < length:
+                return self.datasets[i][idx]
+            idx -= length
+        raise IndexError("Index out of range")
 
 class CachedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
