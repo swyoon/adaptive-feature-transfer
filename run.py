@@ -172,9 +172,7 @@ def main(
 
         # Concatenate original training dataset with synthetic dataset
         train_ds = ConcatFeatureDataset(train_ds, synthetic_ds)
-        print(
-            f"Combined training set size: {len(train_ds)} (original: {len(train_ds.ds1)}, synthetic: {len(train_ds.ds2)})"
-        )
+        print(f"Combined training set size: {len(train_ds)} (original: {len(train_ds.datasets[0])}, synthetic: {sum(train_ds.lengths[1:])})")
 
     # create loaders
     # 0 workser if torchvision
@@ -267,9 +265,7 @@ def main(
                 )
 
             train_ds = ConcatFeatureDataset(train_ds, synthetic_ds)
-            print(
-                f"Combined training set size for fconcat: {len(train_ds)} (original: {len(train_ds.ds1)}, synthetic: {len(train_ds.ds2)})"
-            )
+            print(f"Combined training set size: {len(train_ds)} (original: {len(train_ds.datasets[0])}, synthetic: {sum(train_ds.lengths[1:])})")
 
         train_loader = torch.utils.data.DataLoader(
             train_ds, batch_size=batch_size, shuffle=True, num_workers=0
