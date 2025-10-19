@@ -243,10 +243,17 @@ class EDM(nn.Module):
                         os.makedirs(f"{output_dir}/x0", exist_ok=True)
                         img[0].save(f"{output_dir}/x0/class{class_label}_step{i}_{k}.png")
 
+        if self.fkd is not None:
+            rewards = self.fkd.population_rs.tolist()
+            max_index = np.argmax(rewards)
+        else:
+            rewards = [0] * self.batch_size
+            max_index = 0  # if not using FKD, just return the first sample
+
         return (
-            x_next[0].unsqueeze(0).to(torch.float32),
-            class_labels.nonzero(as_tuple=True)[1][0].unsqueeze(0),
-            self.fkd.population_rs.tolist(),
+            x_next[max_index].unsqueeze(0).to(torch.float32),
+            class_labels.nonzero(as_tuple=True)[1][max_index].unsqueeze(0),
+            rewards[max_index],
         )
 
     def sample_gradient_guidance(
