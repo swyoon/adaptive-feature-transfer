@@ -260,6 +260,7 @@ class EDM(nn.Module):
         self,
         batch_size,
         func=None,
+        func_kwargs={},
         guidance_scale=1.0,
         guide_every=1,
         latents=None,
@@ -315,11 +316,13 @@ class EDM(nn.Module):
 
             # guidance
             if func is not None and i % guide_every == 0:
+                func_kwargs["targets"] = class_labels.nonzero(as_tuple=True)[1].detach()
+
                 with torch.enable_grad():
                     x_cur_norm = ((x_cur**2).mean((1, 2, 3), keepdim=True)) ** 0.5
                     x0 = x_cur / x_cur_norm
                     x0 = x0.detach().requires_grad_(True).float()
-                    f = func(x0)
+                    f = func(x0, **func_kwargs)
                     # numerator = torch.exp(logits * joint_temperature)[class_labels != 0].unsqueeze(1)
                     # denominator = torch.exp(logits * uncond_temperature).sum(1, keepdims=True)
                     # selected = torch.log(numerator / denominator)
