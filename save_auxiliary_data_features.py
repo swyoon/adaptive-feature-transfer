@@ -38,6 +38,7 @@ def save_features(train_loader, model, feature_path, debug):
         print(f'Saved features to {feature_path}')
 
 def main(model_class, directory, class_file=None, num_images=None, batch_size=128, num_workers=0, save_path=None, debug=False, **kwargs):
+    print("Saving auxiliary data features...")
     assert save_path is not None, "Please specify a save_path"
     args = locals()
     u.pretty_print_dict(args)
