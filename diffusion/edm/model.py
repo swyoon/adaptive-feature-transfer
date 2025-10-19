@@ -334,7 +334,7 @@ class EDM(nn.Module):
 
                     grads = torch.autograd.grad(f.sum(), x0)[0]
                     grads_norm = ((grads**2).mean((1, 2, 3), keepdim=True)) ** 0.5
-                    grads = grads / grads_norm * guidance_scale  # * x_cur_norm
+                    grads = grads / grads_norm * guidance_scale  * x_cur_norm
             else:
                 grads = 0
 
