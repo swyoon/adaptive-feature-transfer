@@ -362,6 +362,122 @@ class AFTModule(torch.nn.Module):
         with torch.no_grad():
             feats = self.pretrained_model(self.transform_pretrained(x))
         return feats
+    
+
+def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=None, feature_pool_pretrained=None, target_pool=None,**kwargs):
+    if score == "ce":
+        rewards = aft_module.get_ce_loss(images, targets, reduction="none")
+    elif score == "aft":
+        rewards = []
+        for image in images:
+            reward = aft_module.get_aft_loss(image.unsqueeze(0), feature_pool_model, feature_pool_pretrained)
+            rewards.append(reward)
+        rewards = torch.stack(rewards)
+    elif score == "total":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.get_total_loss(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained)
+            rewards.append(reward)
+        rewards = torch.stack(rewards)
+    elif score == "pretrained_diversity_cos_min":
+        rewards = aft_module.get_pretrained_diversity(images, feature_pool_pretrained, method="cos_min")
+    elif score == "pretrained_diversity_l2_min":
+        rewards = aft_module.get_pretrained_diversity(images, feature_pool_pretrained, method="l2_min")
+    elif score == "model_diversity_cos_min":
+        rewards = aft_module.get_model_diversity(images, feature_pool_model, method="cos_min")
+    elif score == "model_diversity_l2_min":
+        rewards = aft_module.get_model_diversity(images, feature_pool_model, method="l2_min")
+    elif score == "pretrained_intra_diversity_cos_min":
+        rewards = aft_module.get_pretrained_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="cos_min")
+    elif score == "pretrained_intra_diversity_l2_min":
+        rewards = aft_module.get_pretrained_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="l2_min")
+    elif score == "model_intra_diversity_cos_min":
+        rewards = aft_module.get_model_intra_diversity(images, targets, feature_pool_model, target_pool, method="cos_min")
+    elif score == "model_intra_diversity_l2_min":
+        rewards = aft_module.get_model_intra_diversity(images, targets, feature_pool_model, target_pool, method="l2_min")
+    elif score == "pretrained_inter_intra_diversity_cos_min":
+        rewards = aft_module.get_pretrained_inter_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="cos_min")
+    elif score == "pretrained_inter_intra_diversity_l2_min":
+        rewards = aft_module.get_pretrained_inter_intra_diversity(images, targets, feature_pool_pretrained, target_pool, method="l2_min")    
+    elif score == "model_inter_intra_diversity_cos_min":
+        rewards = aft_module.get_model_inter_intra_diversity(images, targets, feature_pool_model, target_pool, method="cos_min")
+    elif score == "model_inter_intra_diversity_l2_min":
+        rewards = aft_module.get_model_inter_intra_diversity(images, targets, feature_pool_model, target_pool, method="l2_min")
+    elif score == "aft_times_pretrained_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min")
+            rewards.append(reward)
+        rewards = torch.stack(rewards)
+    elif score == "aft_times_pretrained_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min")
+            rewards.append(reward)
+        rewards = torch.stack(rewards)
+    elif score == "aft_times_model_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min")
+            rewards.append(reward)
+        rewards = torch.stack(rewards)
+    elif score == "aft_times_model_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min")
+            rewards.append(reward)
+        rewards = torch.stack(rewards)
+    elif score == "aft_times_pretrained_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    elif score == "aft_times_pretrained_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    elif score == "aft_times_model_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    elif score == "aft_times_model_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    elif score == "aft_times_pretrained_inter_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    elif score == "aft_times_pretrained_inter_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_pretrained_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    elif score == "aft_times_model_inter_intra_diversity_cos_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="cos_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    elif score == "aft_times_model_inter_intra_diversity_l2_min":
+        rewards = []
+        for image, target in zip(images, targets):
+            reward = aft_module.aft_score_times_model_inter_intra_diversity(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained, target_pool, method="l2_min")
+            rewards.append(reward)
+        rewards = torch.tensor(rewards)
+    else:
+        raise ValueError(f"Unknown score: {score}")
+    return rewards
 
 def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering):
     DEVICE = 'cuda'
@@ -369,6 +485,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         network_pkl: {edm_ckpt}
         batch_size: 1
         dtype: float16
+        num_steps: 60
         S_churn: 40
         """
 
@@ -409,23 +526,26 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         "adaptive_resampling": True,
         "resample_frequency": 5,
         "resampling_t_start": 0,
-        "resampling_t_end": 60,
         "time_steps": 60, # set as same as resampling_t_end
         "latent_to_decode_fn": lambda x: x,  # identity for EDM (already image-space)
-        "get_reward_fn": "AFT",  # "ClassifierLoss" will be defined later
-        "cls_model": None,  # it is required when using "ClassifierLoss"
         "use_smc": True if not no_steering else False,
         "output_dir": "./outputs/generated/fkd_results", # modify
         "print_rewards": False, # print rewards during sampling
         "visualize_intermediate": False, # save results during sampling in output_dir
         "visualzie_x0": False, # save x0 prediction during sampling in output_dir
+    }
+
+    # define reward_score
+    reward_fn = do_aft_score
+
+    reward_fn_args = {
         "feature_pool_model": init_feature_pool_model,
         "feature_pool_pretrained": init_feature_pool_pretrained,
         "target_pool": init_target_pool,
-        "aft_module": aft_module,
         "score": aft_score,
+        "aft_module": aft_module,
     }
-
+    # reward_fn =
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -433,7 +553,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     image_ind = 0
     for _ in tqdm(range(int(np.ceil(num_target_images / config['batch_size'])))):
         with torch.autocast(device_type=next(iter(generator.parameters())).device.type, dtype=torch.float16):
-            result = generator.sample_fk_steering(fkd_args=FKD_ARGS)
+            result = generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
 
         images = result[0]
         labels = result[1].cpu().numpy().tolist()
@@ -450,8 +570,8 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         features_model = aft_module.get_model_feature(images)
         features_pretrained = aft_module.get_pretrained_feature(images)
 
-        FKD_ARGS["feature_pool_model"] = torch.cat([FKD_ARGS["feature_pool_model"], features_model], dim=0)
-        FKD_ARGS["feature_pool_pretrained"] = torch.cat([FKD_ARGS["feature_pool_pretrained"], features_pretrained], dim=0)
+        reward_fn_args["feature_pool_model"] = torch.cat([reward_fn_args["feature_pool_model"], features_model], dim=0)
+        reward_fn_args["feature_pool_pretrained"] = torch.cat([reward_fn_args["feature_pool_pretrained"], features_pretrained], dim=0)
 
 
 if __name__ == "__main__":

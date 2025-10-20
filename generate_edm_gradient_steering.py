@@ -465,7 +465,7 @@ def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=Non
         raise ValueError(f"Unknown score: {score}")
     return rewards
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering):
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering, gradient_scale=0.03):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
@@ -522,7 +522,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     for _ in tqdm(range(int(np.ceil(num_target_images / config['batch_size'])))):
         with torch.autocast(device_type=next(iter(generator.parameters())).device.type, dtype=torch.float32):
 
-            result = generator.sample_gradient_guidance(config['batch_size'], do_aft_score if not no_steering else None, aft_args, guide_every=5, guidance_scale=0.03)
+            result = generator.sample_gradient_guidance(config['batch_size'], do_aft_score if not no_steering else None, aft_args, guide_every=5, guidance_scale=gradient_scale)
 
         images = result[0]
         labels = result[1].cpu().numpy().tolist()
@@ -564,6 +564,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_downstream', type=str2bool, default=False, help='Whether to use downstream data for feature pool initialization')
     parser.add_argument('--save_dir', type=str, required=True, help='Directory to save generated images')
     parser.add_argument('--no_steering', action='store_true', help='If set, do not use steering (for ablation)')
+    parser.add_argument('--gradient_scale', type=float, default=0.03, help='Guidance scale for gradient steering')
     args = parser.parse_args()
 
     print("generating data with edm guidance steering...")
@@ -599,4 +600,4 @@ if __name__ == "__main__":
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering, args.gradient_scale)
