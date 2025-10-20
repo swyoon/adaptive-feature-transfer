@@ -8,7 +8,7 @@ from PIL import Image
 from typing import Optional, Union
 
 from . import dnnlib
-from .fkd import FKD, FKD_ARGS_DEFAULTS, get_reward_function
+from .fkd import FKD, FKD_ARGS_DEFAULTS
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -122,6 +122,8 @@ class EDM(nn.Module):
         self,
         latents=None,
         class_label:  Optional[Union[int, list]] = None,
+        reward_fn=None,
+        reward_fn_args: dict = {},
         fkd_args: dict = FKD_ARGS_DEFAULTS,
     ):
         device = next(iter(self.net.parameters())).device
@@ -130,7 +132,10 @@ class EDM(nn.Module):
         output_dir = fkd_args.get("output_dir", "./fkd_results")
         # set EDM parameters to fkd_args
         self.batch_size = fkd_args["num_particles"]
-        self.num_steps = fkd_args["resampling_t_end"]
+        if "resampling_t_end" in fkd_args:
+            assert fkd_args["resampling_t_end"] == self.num_steps, "resampling_t_end in fkd_args must equal to self.num_steps"
+        fkd_args["resampling_t_end"] = self.num_steps
+
 
         if latents is None:
             latents = torch.randn(
@@ -152,22 +157,13 @@ class EDM(nn.Module):
                     torch.tensor([class_label] * self.batch_size, device=device)
                 ]
 
-        if fkd_args["get_reward_fn"] == "AFT":
-            fkd_args["targets"] = torch.tensor([class_label] * self.batch_size, device=device)
+        reward_fn_args["targets"] = torch.tensor([class_label] * self.batch_size, device=device) # TODO: add conditioning
             
         # Set up for FK-steering
-        def postprocess_and_apply_reward_fn(images):
-            rewards = get_reward_function(
-                fkd_args["get_reward_fn"],  # "PixelReward", "ClassifierLossReward",
-                images=images,
-                prompts=class_label,
-                **fkd_args,
-            )
-            return torch.tensor(rewards, device=images.device, dtype=images.dtype)
 
         if fkd_args is not None and fkd_args.get("use_smc", False):
             self.fkd = FKD(
-                reward_fn=postprocess_and_apply_reward_fn,
+                reward_fn=reward_fn,
                 **fkd_args,
             )
         else:
@@ -225,6 +221,7 @@ class EDM(nn.Module):
                     sampling_idx=i,
                     latents=x_next,
                     x0_preds=x0_for_reward,
+                    reward_fn_args=reward_fn_args
                 )
                 # visualize and save it in the ouput_dir
                 if fkd_args["print_rewards"] and current_pop_images is not None:
