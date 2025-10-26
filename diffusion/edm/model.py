@@ -136,6 +136,7 @@ class EDM(nn.Module):
             assert fkd_args["resampling_t_end"] == self.num_steps, "resampling_t_end in fkd_args must equal to self.num_steps"
         fkd_args["resampling_t_end"] = self.num_steps
 
+        assert self.S_churn > 0 and self.S_noise > 0, "For FKD steering, S_churn and S_noise must be greater than 0."
 
         if latents is None:
             latents = torch.randn(
