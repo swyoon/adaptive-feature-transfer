@@ -188,7 +188,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         "resample_frequency": 5,
         "resampling_t_start": 0,
         "time_steps": 60, # set as same as resampling_t_end
-        "latent_to_decode_fn": lambda x: x,  # identity for EDM (already image-space)
+        "latent_to_decode_fn": lambda x: torch.clamp(x, -1, 1) * 0.5 + 0.5,  # identity for EDM (already image-space)
         "use_smc": True if not no_steering else False,
         "output_dir": "./outputs/generated/fkd_results", # modify
         "print_rewards": False, # print rewards during sampling
