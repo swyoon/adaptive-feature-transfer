@@ -227,7 +227,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
             Image.fromarray(image_np, "RGB").save(image_path)
             image_ind += 1
 
-
+        images = torch.clamp(images, -1., 1.) * 0.5 + 0.5
         features_model = aft_module.get_model_feature(images)
         features_pretrained = aft_module.get_pretrained_feature(images)
 

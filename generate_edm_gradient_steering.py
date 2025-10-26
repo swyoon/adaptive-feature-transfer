@@ -202,13 +202,12 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
             Image.fromarray(image_np, "RGB").save(image_path)
             image_ind += 1
 
+        images = torch.clamp(images, -1., 1.) * 0.5 + 0.5
+        features_model = aft_module.get_model_feature(images)
+        features_pretrained = aft_module.get_pretrained_feature(images)
 
-        # TODO: roll back
-        # features_model = aft_module.get_model_feature(images)
-        # features_pretrained = aft_module.get_pretrained_feature(images)
-
-        # aft_args["feature_pool_model"] = torch.cat([aft_args["feature_pool_model"], features_model], dim=0).detach()
-        # aft_args["feature_pool_pretrained"] = torch.cat([aft_args["feature_pool_pretrained"], features_pretrained], dim=0).detach()
+        aft_args["feature_pool_model"] = torch.cat([aft_args["feature_pool_model"], features_model], dim=0).detach()
+        aft_args["feature_pool_pretrained"] = torch.cat([aft_args["feature_pool_pretrained"], features_pretrained], dim=0).detach()
 
 
 if __name__ == "__main__":
@@ -257,14 +256,6 @@ if __name__ == "__main__":
         prior_ckpt=prior_ckpt,
     ).to('cuda')
 
-    # TODO: check
-    aft_module.transform.transforms.pop(0)
-    aft_module.transform.transforms.pop(0)
-
-    aft_module.transform_pretrained.transforms.pop(0)
-    aft_module.transform_pretrained.transforms.pop(0)
-
-
     # aft_score = "total"
     # use_downstream = True
     # num_target_images = 3000
@@ -277,4 +268,4 @@ if __name__ == "__main__":
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering, args.gradient_scale, args.guide_every, args.steering_method)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering, args.gradient_scale, args.guide_every)
