@@ -465,13 +465,14 @@ def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=Non
         raise ValueError(f"Unknown score: {score}")
     return rewards
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering, gradient_scale=0.03):
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering, gradient_scale=0.03, guide_every=5):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
         batch_size: 1
         dtype: float32
         S_churn: 40
+        num_steps: 60
         """
 
     config = yaml.safe_load(config)
@@ -522,7 +523,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     for _ in tqdm(range(int(np.ceil(num_target_images / config['batch_size'])))):
         with torch.autocast(device_type=next(iter(generator.parameters())).device.type, dtype=torch.float32):
 
-            result = generator.sample_gradient_guidance(config['batch_size'], do_aft_score if not no_steering else None, aft_args, guide_every=5, guidance_scale=gradient_scale)
+            result = generator.sample_gradient_guidance(config['batch_size'], do_aft_score if not no_steering else None, aft_args, guide_every=guide_every, guidance_scale=gradient_scale)
 
         images = result[0]
         labels = result[1].cpu().numpy().tolist()
@@ -536,11 +537,12 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
             image_ind += 1
 
 
-        features_model = aft_module.get_model_feature(images)
-        features_pretrained = aft_module.get_pretrained_feature(images)
+        # TODO: roll back
+        # features_model = aft_module.get_model_feature(images)
+        # features_pretrained = aft_module.get_pretrained_feature(images)
 
-        aft_args["feature_pool_model"] = torch.cat([aft_args["feature_pool_model"], features_model], dim=0).detach()
-        aft_args["feature_pool_pretrained"] = torch.cat([aft_args["feature_pool_pretrained"], features_pretrained], dim=0).detach()
+        # aft_args["feature_pool_model"] = torch.cat([aft_args["feature_pool_model"], features_model], dim=0).detach()
+        # aft_args["feature_pool_pretrained"] = torch.cat([aft_args["feature_pool_pretrained"], features_pretrained], dim=0).detach()
 
 
 if __name__ == "__main__":
@@ -565,6 +567,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_dir', type=str, required=True, help='Directory to save generated images')
     parser.add_argument('--no_steering', action='store_true', help='If set, do not use steering (for ablation)')
     parser.add_argument('--gradient_scale', type=float, default=0.03, help='Guidance scale for gradient steering')
+    parser.add_argument('--guide_every', type=int, default=5, help='Frequency of guidance application')
     args = parser.parse_args()
 
     print("generating data with edm guidance steering...")
@@ -588,6 +591,14 @@ if __name__ == "__main__":
         prior_ckpt=prior_ckpt,
     ).to('cuda')
 
+    # TODO: check
+    aft_module.transform.transforms.pop(0)
+    aft_module.transform.transforms.pop(0)
+
+    aft_module.transform_pretrained.transforms.pop(0)
+    aft_module.transform_pretrained.transforms.pop(0)
+
+
     # aft_score = "total"
     # use_downstream = True
     # num_target_images = 3000
@@ -600,4 +611,4 @@ if __name__ == "__main__":
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering, args.gradient_scale)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering, args.gradient_scale, args.guide_every, args.steering_method)
