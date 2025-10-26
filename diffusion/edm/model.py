@@ -311,35 +311,35 @@ class EDM(nn.Module):
             )
             t_hat = self.net.round_sigma(t_cur + gamma * t_cur)
 
-            # guidance
+            x_hat = x_cur + (t_hat**2 - t_cur**2).sqrt() * self.S_noise * torch.randn_like(x_cur)
+
+            # gradient guidance
             if func is not None and i % guide_every == 0:
                 func_kwargs["targets"] = class_labels.nonzero(as_tuple=True)[1].detach()
 
+                x_hat = x_hat.detach().requires_grad_(True)
+
                 with torch.enable_grad():
-                    x_cur_norm = ((x_cur**2).mean((1, 2, 3), keepdim=True)) ** 0.5
-                    x0 = x_cur / x_cur_norm
-                    x0 = x0.detach().requires_grad_(True).float()
+                    with torch.autocast(device_type=device.type, dtype=dtype):
+                        denoised = self.net(x_hat, t_hat, class_labels).to(dtype)
+
+                    x0 = denoised.float()
+                    x0 = torch.clamp(denoised, -1, 1) * 0.5 + 0.5
                     f = func(x0, **func_kwargs)
-                    # numerator = torch.exp(logits * joint_temperature)[class_labels != 0].unsqueeze(1)
-                    # denominator = torch.exp(logits * uncond_temperature).sum(1, keepdims=True)
-                    # selected = torch.log(numerator / denominator)
 
-                    # current_time = i
-                    # current_guidance = (max_guidance/len(t_steps)) * (len(t_steps) - current_time)
-                    # current_guidance = max(current_guidance, 0.00001)
+                    grads = torch.autograd.grad(f.sum(), x_hat, retain_graph=True)[0]
 
-                    # interval = len(t_steps) - 1
-                    # add_value = np.sin( current_time/interval * (1*np.pi) ) * max_guidance * add_factor
-                    # current_guidance = current_guidance + add_value
+                    x_hat_norm = ((x_hat**2).sum((1, 2, 3), keepdim=True)) ** 0.5
+                    grads_norm = ((grads**2).sum((1, 2, 3), keepdim=True)) ** 0.5
 
-                    grads = torch.autograd.grad(f.sum(), x0)[0]
-                    grads_norm = ((grads**2).mean((1, 2, 3), keepdim=True)) ** 0.5
-                    grads = grads / grads_norm * guidance_scale  * x_cur_norm if grads_norm.sum() != 0 else 0
+                    grads = grads / (grads_norm + 1e-8) * x_hat_norm * guidance_scale
+                grads = grads.detach()
+
             else:
-                grads = 0
+                grads = 0 
 
-            x_hat = x_cur + (t_hat**2 - t_cur**2).sqrt() * self.S_noise * torch.randn_like(x_cur) + grads
-
+            x_hat = x_hat + grads
+            
             # Euler step.
             with torch.autocast(device_type=device.type, dtype=dtype):
                 denoised = self.net(x_hat, t_hat, class_labels).to(dtype)
@@ -353,6 +353,7 @@ class EDM(nn.Module):
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
             l_sample.append(x_next.detach().cpu())
+
         if return_dict:
             return {
                 "sample": x_next.to(torch.float32),
