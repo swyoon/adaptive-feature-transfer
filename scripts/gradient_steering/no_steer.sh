@@ -1,7 +1,9 @@
 device=0
-aft_score="total"
+aft_score="ce"
 use_downstream=False
 learn_scales=True
+gradient_scale=0.01
+guide_every=5
 
 # almost fixed
 seed=0
@@ -12,9 +14,9 @@ num_target_images=3000
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    image_dir="./artifacts/251019/gradient/edm_aft_no_gradient_steering_with_downstream/flowers-${seed}"
+    image_dir="./artifacts/251027/gradient/edm_aft_no_gradient_steering_with_downstream/flowers-${seed}"
 else
-    image_dir="./artifacts/251019/gradient/edm_aft_no_gradient_steering/flowers-${seed}"
+    image_dir="./artifacts/251027/gradient/edm_aft_no_gradient_steering/flowers-${seed}"
 fi
 
 # fixed
