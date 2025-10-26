@@ -1,5 +1,5 @@
 device=0
-aft_score="total"
+aft_score="ce"
 use_downstream=False
 learn_scales=True
 
@@ -12,9 +12,9 @@ num_target_images=3000
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    image_dir="./artifacts/251015/edm_aft_no_steering_with_downstream/flowers-${seed}"
+    image_dir="./artifacts/251027/fk/edm_aft_no_fk_steering_with_downstream/flowers-${seed}"
 else
-    image_dir="./artifacts/251015/edm_aft_no_steering/flowers-${seed}"
+    image_dir="./artifacts/251027/fk/edm_aft_no_fk_steering/flowers-${seed}"
 fi
 
 # fixed
@@ -23,9 +23,9 @@ dataset_name=flowers
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    steer_method=edm_aft_no_steering_with_downstream
+    steer_method=edm_aft_no_fk_steering_with_downstream
 else
-    steer_method=edm_aft_no_steering
+    steer_method=edm_aft_no_fk_steering
 fi
 
 class_file="./classes/${dataset_name}.txt"
@@ -53,9 +53,9 @@ CUDA_VISIBLE_DEVICES=${device} python generate_edm_fk_steering.py \
     --num_target_images ${num_target_images} \
     --use_downstream ${use_downstream} \
     --save_dir ${image_dir} \
-    --no_steering
-
-CUDA_VISIBLE_DEVICES=${device} python save_auxiliary_data_features.py \
+    --no_steering 
+    
+    CUDA_VISIBLE_DEVICES=${device} python save_auxiliary_data_features.py \
     --model_class=${pretrained_model} \
     --directory=${image_dir} \
     --class_file=${class_file} \

@@ -1,5 +1,5 @@
-device=3
-aft_score="total"
+device=2
+aft_score="aft"
 use_downstream=False
 learn_scales=True
 
