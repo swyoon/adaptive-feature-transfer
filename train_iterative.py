@@ -491,8 +491,8 @@ class IterativeTrainer:
             features_model = self.aft_module.get_model_feature(images)
             features_pretrained = self.aft_module.get_pretrained_feature(images)
             
-            FKD_ARGS["feature_pool_model"] = torch.cat([FKD_ARGS["feature_pool_model"], features_model], dim=0)
-            FKD_ARGS["feature_pool_pretrained"] = torch.cat([FKD_ARGS["feature_pool_pretrained"], features_pretrained], dim=0)
+            reward_fn_args["feature_pool_model"] = torch.cat([reward_fn_args["feature_pool_model"], features_model], dim=0)
+            reward_fn_args["feature_pool_pretrained"] = torch.cat([reward_fn_args["feature_pool_pretrained"], features_pretrained], dim=0)
     
     def extract_synthetic_features(self, iteration, synthetic_dir, features_dir):
         """Extract teacher features for synthetic data."""
