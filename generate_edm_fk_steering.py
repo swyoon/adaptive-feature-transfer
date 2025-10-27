@@ -32,6 +32,10 @@ class AFTModule(torch.nn.Module):
         self.model.eval()
 
         self.transform = get_transform(train=False)
+
+        self.get_transform = get_transform
+        self.tokenizer = tokenizer
+        self.input_collate_fn = input_collate_fn
         
 
         self.pretrained_model, get_transform_pretrained, tokenizer_pretrained, input_collate_fn_pretrained = create_model(pretrained_model, out_dim=0, pretrained=True, extract_features=True)
@@ -162,8 +166,8 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
 
     if use_downstream:
-        train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True)[0]
-        train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=None)
+        train_dataset = get_dataset("flowers", aft_module.get_transform, aft_module.tokenizer, no_augment=True, cache=False)[0]
+        train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=aft_module.input_collate_fn)
 
         for data in tqdm(train_loader):
             if isinstance(data, (tuple, list)):
@@ -193,7 +197,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         "output_dir": "./outputs/generated/fkd_results", # modify
         "print_rewards": False, # print rewards during sampling
         "visualize_intermediate": False, # save results during sampling in output_dir
-        "visualzie_x0": False, # save x0 prediction during sampling in output_dir
+        "visualize_x0": False, # save x0 prediction during sampling in output_dir
     }
 
     # define reward_score

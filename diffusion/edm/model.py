@@ -235,7 +235,7 @@ class EDM(nn.Module):
                         img.save(
                             f"{output_dir}/candidates/class{class_label}_step{i}_{k}_r{self.fkd.population_rs.tolist()[k]:.0f}.png"
                         )
-                if fkd_args["visualzie_x0"]:
+                if fkd_args["visualize_x0"]:
                     for k, img in enumerate(x0_for_reward):
                         img = self._to_pil_from_tensor_batch(img.unsqueeze(0))
                         os.makedirs(f"{output_dir}/x0", exist_ok=True)

@@ -33,7 +33,7 @@ from models import Concat, LinearModel, ProductLinearModel
 from prior import UniformPrior, get_prior, get_btune_prior
 from diffusion.edm.model import EDM
 from diffusion.edm.fkd.fkd_rewards import DiversityModel
-from generate_edm_fk_steering import AFTModule
+from generate_edm_fk_steering import AFTModule, do_aft_score
 
 
 class IterativeTrainer:
@@ -154,6 +154,7 @@ class IterativeTrainer:
                 network_pkl: {self.args.edm_ckpt}
                 batch_size: 1
                 dtype: float16
+                num_steps: 60
                 S_churn: 40
             """
             config = yaml.safe_load(config)
@@ -408,6 +409,8 @@ class IterativeTrainer:
             network_pkl: {self.args.edm_ckpt}
             batch_size: 1
             dtype: float16
+            num_steps: 60
+            S_churn: 40
         """
         config = yaml.safe_load(config)
         
@@ -417,9 +420,9 @@ class IterativeTrainer:
         init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
         
         if self.args.use_downstream:
-            train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True)[0]
-            train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=None)
-            
+            train_dataset = get_dataset("flowers", self.aft_module.get_transform, self.aft_module.tokenizer, no_augment=True, cache=False)[0]
+            train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=self.aft_module.input_collate_fn)
+
             for data in tqdm(train_loader, desc="Loading downstream features"):
                 if isinstance(data, (tuple, list)):
                     inputs, labels = data
@@ -443,14 +446,17 @@ class IterativeTrainer:
             "resampling_t_start": 0,
             "resampling_t_end": 60,
             "time_steps": 60,
-            "latent_to_decode_fn": lambda x: x,
-            "get_reward_fn": "AFT",
-            "cls_model": None,
+            "latent_to_decode_fn": lambda x: torch.clamp(x, -1, 1) * 0.5 + 0.5,
             "use_smc": True if not self.args.no_steering else False,
             "output_dir": "./outputs/generated/fkd_results",
             "print_rewards": False,
             "visualize_intermediate": False,
-            "visualzie_x0": False,
+            "visualize_x0": False,
+        }
+
+        reward_fn = do_aft_score
+
+        reward_fn_args = {
             "feature_pool_model": init_feature_pool_model,
             "feature_pool_pretrained": init_feature_pool_pretrained,
             "target_pool": init_target_pool,
@@ -467,7 +473,7 @@ class IterativeTrainer:
         for _ in tqdm(range(int(np.ceil(self.args.num_target_images / config['batch_size']))), 
                      desc="Generating synthetic images"):
             with torch.autocast(device_type=next(iter(self.edm_generator.parameters())).device.type, dtype=torch.float16):
-                result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS)
+                result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
             
             images = result[0]
             labels = result[1].cpu().numpy().tolist()
@@ -481,6 +487,7 @@ class IterativeTrainer:
                 image_ind += 1
             
             # Update feature pools
+            images = torch.clamp(images, -1., 1.) * 0.5 + 0.5
             features_model = self.aft_module.get_model_feature(images)
             features_pretrained = self.aft_module.get_pretrained_feature(images)
             
