@@ -655,6 +655,9 @@ class IterativeTrainer:
                 synthetic_features_path = self.extract_synthetic_features(iteration-1, self.current_synthetic_dir, features_dir)
                 self.current_synthetic_features = synthetic_features_path
             
+            if hasattr(self, 'current_synthetic_features') and self.current_synthetic_features:
+                self.all_synthetic_features.append(self.current_synthetic_features)
+
             # Step 3: Initialize/update training components
             loaders, train_ds = self.initialize_training_components(iteration)
             
@@ -707,8 +710,6 @@ class IterativeTrainer:
             
             # Add to accumulated synthetic data lists for cumulative training option
             self.all_synthetic_dirs.append(synthetic_dir)
-            if hasattr(self, 'current_synthetic_features') and self.current_synthetic_features:
-                self.all_synthetic_features.append(self.current_synthetic_features)
             
             # Log iteration completion
             iteration_log = os.path.join(iter_dir, "iteration_log.txt")
