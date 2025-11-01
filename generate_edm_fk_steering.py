@@ -166,7 +166,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
 
     if use_downstream:
-        train_dataset = get_dataset("flowers", aft_module.get_transform, aft_module.tokenizer, no_augment=True, cache=False)[0]
+        train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True)[0]
         train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=aft_module.input_collate_fn)
 
         for data in tqdm(train_loader):
