@@ -1,7 +1,10 @@
-device=3
+device=1
 aft_score="total"
-use_downstream=False
+use_downstream=True
 learn_scales=True
+num_steps=18
+lmda=1.0
+resample_frequency=3
 
 # almost fixed
 seed=0
@@ -12,9 +15,9 @@ num_target_images=3000
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    image_dir="./artifacts/251027/fk/edm_aft_${aft_score}_fk_steering_with_downstream/flowers-${seed}"
+    image_dir="./artifacts/251029/fk/edm_aft_${aft_score}_fk_steering_${num_steps}_steps_${lmda}_lambda_${resample_frequency}_resample_with_downstream/flowers-${seed}"
 else
-    image_dir="./artifacts/251027/fk/edm_aft_${aft_score}_fk_steering/flowers-${seed}"
+    image_dir="./artifacts/251029/fk/edm_aft_${aft_score}_fk_steering_${num_steps}_steps_${lmda}_lambda_${resample_frequency}_resample/flowers-${seed}"
 fi
 
 # fixed
@@ -23,9 +26,9 @@ dataset_name=flowers
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    steer_method=edm_aft_${aft_score}_fk_steering_with_downstream
+    steer_method=edm_aft_${aft_score}_fk_steering_${num_steps}_steps_${lmda}_lambda_${resample_frequency}_resample_with_downstream
 else
-    steer_method=edm_aft_${aft_score}_fk_steering
+    steer_method=edm_aft_${aft_score}_fk_steering_${num_steps}_steps_${lmda}_lambda_${resample_frequency}_resample
 fi
 
 class_file="./classes/${dataset_name}.txt"
@@ -52,7 +55,10 @@ CUDA_VISIBLE_DEVICES=${device} python generate_edm_fk_steering.py \
     --aft_score ${aft_score} \
     --num_target_images ${num_target_images} \
     --use_downstream ${use_downstream} \
-    --save_dir ${image_dir}
+    --save_dir ${image_dir} \
+    --num_steps ${num_steps} \
+    --lmda ${lmda} \
+    --resample_frequency ${resample_frequency}
 
 CUDA_VISIBLE_DEVICES=${device} python save_auxiliary_data_features.py \
     --model_class=${pretrained_model} \

@@ -1,9 +1,10 @@
-device=2
+device=1
 aft_score="aft"
-use_downstream=False
+use_downstream=True
 learn_scales=True
 gradient_scale=0.01
-guide_every=5
+guide_every=3
+num_steps=18
 
 # almost fixed
 seed=0
@@ -14,9 +15,9 @@ num_target_images=3000
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    image_dir="./artifacts/251027/gradient/edm_aft_${aft_score}_gradient_steering_${gradient_scale}_${guide_every}_with_downstream/flowers-${seed}"
+    image_dir="./artifacts/251029/gradient/edm_aft_${aft_score}_gradient_steering_${num_steps}_steps_${gradient_scale}_${guide_every}_with_downstream/flowers-${seed}"
 else
-    image_dir="./artifacts/251027/gradient/edm_aft_${aft_score}_gradient_steering_${gradient_scale}_${guide_every}/flowers-${seed}"
+    image_dir="./artifacts/251029/gradient/edm_aft_${aft_score}_gradient_steering_${num_steps}_steps_${gradient_scale}_${guide_every}/flowers-${seed}"
 fi
 
 # fixed
@@ -25,9 +26,9 @@ dataset_name=flowers
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    steer_method=edm_aft_${aft_score}_gradient_steering_${gradient_scale}_${guide_every}_with_downstream
+    steer_method=edm_aft_${aft_score}_gradient_steering_${num_steps}_steps_${gradient_scale}_${guide_every}_with_downstream
 else
-    steer_method=edm_aft_${aft_score}_gradient_steering_${gradient_scale}_${guide_every}
+    steer_method=edm_aft_${aft_score}_gradient_steering_${num_steps}_steps_${gradient_scale}_${guide_every}
 fi
 
 class_file="./classes/${dataset_name}.txt"
@@ -57,6 +58,7 @@ CUDA_VISIBLE_DEVICES=${device} python generate_edm_gradient_steering.py \
     --save_dir ${image_dir} \
     --gradient_scale ${gradient_scale} \
     --guide_every ${guide_every} \
+    --num_steps ${num_steps}
 
 CUDA_VISIBLE_DEVICES=${device} python save_auxiliary_data_features.py \
     --model_class=${pretrained_model} \
