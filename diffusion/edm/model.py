@@ -132,9 +132,9 @@ class EDM(nn.Module):
         output_dir = fkd_args.get("output_dir", "./fkd_results")
         # set EDM parameters to fkd_args
         self.batch_size = fkd_args["num_particles"]
-        if "resampling_t_end" in fkd_args:
-            assert fkd_args["resampling_t_end"] == self.num_steps, "resampling_t_end in fkd_args must equal to self.num_steps"
-        fkd_args["resampling_t_end"] = self.num_steps
+        if "time_steps" in fkd_args:
+            assert fkd_args["time_steps"] == self.num_steps, "time_steps in fkd_args must equal to self.num_steps"
+        fkd_args["time_steps"] = self.num_steps
 
         assert self.S_churn > 0 and self.S_noise > 0, "For FKD steering, S_churn and S_noise must be greater than 0."
 
@@ -264,6 +264,7 @@ class EDM(nn.Module):
         latents=None,
         class_labels=None,
         return_dict=False,
+        adjust_noise_level=False,
     ):
         """
         func: a function that takes a tensor and returns a tensor
@@ -335,6 +336,8 @@ class EDM(nn.Module):
 
                     grads = grads / (grads_norm + 1e-8) * x_hat_norm * guidance_scale
                 grads = grads.detach()
+                if adjust_noise_level:
+                    t_hat = t_hat * (1 + guidance_scale)
 
             else:
                 grads = 0 
