@@ -56,6 +56,14 @@ class AFTModule(torch.nn.Module):
         )
         prior_state = torch.load(prior_ckpt, map_location="cpu")
         self.prior.load_state_dict(prior_state, strict=True)
+    
+    def entropy(self, x):
+        x = self.transform(x)
+        with torch.no_grad():
+            outputs = self.model(x)
+        prob = torch.nn.functional.softmax(outputs, dim=-1)
+        entropy = torch.nn.functional.cross_entropy(outputs, prob, reduction='none')
+        return entropy
 
     def get_ce_loss(self, x, y, reduction="mean"):
         x = self.transform(x)
@@ -125,7 +133,9 @@ class AFTModule(torch.nn.Module):
     
 
 def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=None, feature_pool_pretrained=None, target_pool=None,**kwargs):
-    if score == "ce":
+    if score == "entropy":
+        rewards = aft_module.entropy(images)
+    elif score == "ce":
         rewards = aft_module.get_ce_loss(images, targets, reduction="none")
     elif score == "aft":
         rewards = []
@@ -144,13 +154,13 @@ def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=Non
         raise ValueError(f"Unknown score: {score}")
     return rewards
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering):
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, num_steps, lmda, resample_frequency, no_steering):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
         batch_size: 1
         dtype: float16
-        num_steps: 60
+        num_steps: {num_steps}
         S_churn: 40
         """
 
@@ -186,12 +196,12 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
 
     FKD_ARGS = {
         "potential_type": "diff",
-        "lmbda": 1.0,
+        "lmbda": lmda,
         "num_particles": 4,
         "adaptive_resampling": True,
-        "resample_frequency": 5,
+        "resample_frequency": resample_frequency,
         "resampling_t_start": 0,
-        "time_steps": 60, # set as same as resampling_t_end
+        "time_steps": num_steps, # set as same as resampling_t_end
         "latent_to_decode_fn": lambda x: torch.clamp(x, -1, 1) * 0.5 + 0.5,  # identity for EDM (already image-space)
         "use_smc": True if not no_steering else False,
         "output_dir": "./outputs/generated/fkd_results", # modify
@@ -259,6 +269,9 @@ if __name__ == "__main__":
     parser.add_argument('--num_target_images', type=int, default=3000, help='Number of target images to generate')
     parser.add_argument('--use_downstream', type=str2bool, default=False, help='Whether to use downstream data for feature pool initialization')
     parser.add_argument('--save_dir', type=str, required=True, help='Directory to save generated images')
+    parser.add_argument('--num_steps', type=int, default=18, help='Number of EDM sampling steps')
+    parser.add_argument('--lmda', type=float, default=10.0, help='Lambda value for FKD steering')
+    parser.add_argument('--resample_frequency', type=int, default=1, help='Resampling frequency for FKD steering')
     parser.add_argument('--no_steering', action='store_true', help='If set, do not use FKD steering (for ablation)')
     args = parser.parse_args()
 
@@ -295,4 +308,4 @@ if __name__ == "__main__":
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.num_steps, args.lmda, args.resample_frequency, args.no_steering)

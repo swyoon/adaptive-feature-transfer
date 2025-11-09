@@ -52,6 +52,13 @@ class AFTModule(torch.nn.Module):
         prior_state = torch.load(prior_ckpt, map_location="cpu")
         self.prior.load_state_dict(prior_state, strict=True)
 
+    def entropy(self, x):
+        x = self.transform(x)
+        outputs = self.model(x)
+        prob = torch.nn.functional.softmax(outputs, dim=-1)
+        entropy = torch.nn.functional.cross_entropy(outputs, prob, reduction='none')
+        return entropy
+    
     def get_ce_loss(self, x, y, reduction="mean"):
         x = self.transform(x)
         outputs = self.model(x)
@@ -113,7 +120,9 @@ class AFTModule(torch.nn.Module):
 
 
 def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=None, feature_pool_pretrained=None, target_pool=None,**kwargs):
-    if score == "ce":
+    if score == "entropy":
+        rewards = aft_module.entropy(images)
+    elif score == "ce":
         rewards = aft_module.get_ce_loss(images, targets, reduction="none")
     elif score == "aft":
         rewards = []
@@ -131,14 +140,14 @@ def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=Non
         raise ValueError(f"Unknown score: {score}")
     return rewards
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering, gradient_scale=0.03, guide_every=5):
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, no_steering, num_steps=18, gradient_scale=0.03, guide_every=5, adjust_noise_level=False):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
         batch_size: 1
-        dtype: float32
+        dtype: float16
         S_churn: 40
-        num_steps: 60
+        num_steps: {num_steps}
         """
 
     config = yaml.safe_load(config)
@@ -164,8 +173,9 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
 
             inputs = inputs.to(DEVICE)
 
-            feature_model = aft_module.get_model_feature(inputs)
-            feature_pretrained = aft_module.get_pretrained_feature(inputs)
+            with torch.no_grad():
+                feature_model = aft_module.get_model_feature(inputs)
+                feature_pretrained = aft_module.get_pretrained_feature(inputs)
 
             init_feature_pool_model = torch.cat([init_feature_pool_model, feature_model], dim=0)
             init_feature_pool_pretrained = torch.cat([init_feature_pool_pretrained, feature_pretrained], dim=0)
@@ -187,9 +197,9 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
 
     image_ind = 0
     for _ in tqdm(range(int(np.ceil(num_target_images / config['batch_size'])))):
-        with torch.autocast(device_type=next(iter(generator.parameters())).device.type, dtype=torch.float32):
+        with torch.autocast(device_type=next(iter(generator.parameters())).device.type, dtype=torch.float16):
 
-            result = generator.sample_gradient_guidance(config['batch_size'], do_aft_score if not no_steering else None, aft_args, guide_every=guide_every, guidance_scale=gradient_scale)
+            result = generator.sample_gradient_guidance(config['batch_size'], do_aft_score if not no_steering else None, aft_args, guide_every=guide_every, guidance_scale=gradient_scale, adjust_noise_level=adjust_noise_level)
 
         images = result[0]
         labels = result[1].cpu().numpy().tolist()
@@ -233,6 +243,8 @@ if __name__ == "__main__":
     parser.add_argument('--no_steering', action='store_true', help='If set, do not use steering (for ablation)')
     parser.add_argument('--gradient_scale', type=float, default=0.03, help='Guidance scale for gradient steering')
     parser.add_argument('--guide_every', type=int, default=5, help='Frequency of guidance application')
+    parser.add_argument('--num_steps', type=int, default=18, help='Number of diffusion steps')
+    parser.add_argument('--adjust_noise_level', action="store_true", help='If set, adjust noise level during guidance')
     args = parser.parse_args()
 
     print("generating data with edm guidance steering...")
@@ -268,4 +280,4 @@ if __name__ == "__main__":
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering, args.gradient_scale, args.guide_every)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.no_steering, args.num_steps, args.gradient_scale, args.guide_every, args.adjust_noise_level)
