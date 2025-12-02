@@ -154,7 +154,7 @@ def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=Non
         raise ValueError(f"Unknown score: {score}")
     return rewards
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, num_steps, lmda, resample_frequency, no_steering):
+def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, num_steps, lmda, resample_frequency, no_steering, aft_batch_size):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
@@ -214,9 +214,9 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     reward_fn = do_aft_score
 
     reward_fn_args = {
-        "feature_pool_model": init_feature_pool_model,
-        "feature_pool_pretrained": init_feature_pool_pretrained,
-        "target_pool": init_target_pool,
+        "feature_pool_model_all": init_feature_pool_model,
+        "feature_pool_pretrained_all": init_feature_pool_pretrained,
+        "target_pool_all": init_target_pool,
         "score": aft_score,
         "aft_module": aft_module,
     }
@@ -227,6 +227,11 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
 
     image_ind = 0
     for _ in tqdm(range(int(np.ceil(num_target_images / config['batch_size'])))):
+        # Resample a subset of feature pool for aft loss computation
+        randidx = np.random.choice(len(reward_fn_args["feature_pool_model_all"]), size=aft_batch_size, replace=False)
+        reward_fn_args["feature_pool_model"] = reward_fn_args["feature_pool_model_all"][randidx]
+        reward_fn_args["feature_pool_pretrained"] = reward_fn_args["feature_pool_pretrained_all"][randidx]
+        reward_fn_args["target_pool"] = reward_fn_args["target_pool_all"][randidx]
         with torch.autocast(device_type=next(iter(generator.parameters())).device.type, dtype=torch.float16):
             result = generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
 
@@ -245,8 +250,9 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         features_model = aft_module.get_model_feature(images)
         features_pretrained = aft_module.get_pretrained_feature(images)
 
-        reward_fn_args["feature_pool_model"] = torch.cat([reward_fn_args["feature_pool_model"], features_model], dim=0)
-        reward_fn_args["feature_pool_pretrained"] = torch.cat([reward_fn_args["feature_pool_pretrained"], features_pretrained], dim=0)
+        reward_fn_args["feature_pool_model_all"] = torch.cat([reward_fn_args["feature_pool_model_all"], features_model], dim=0)
+        reward_fn_args["feature_pool_pretrained_all"] = torch.cat([reward_fn_args["feature_pool_pretrained_all"], features_pretrained], dim=0)
+        reward_fn_args["target_pool_all"] = torch.cat([reward_fn_args["target_pool_all"], torch.tensor(labels).to(DEVICE)], dim=0)
 
 
 if __name__ == "__main__":
@@ -273,6 +279,7 @@ if __name__ == "__main__":
     parser.add_argument('--lmda', type=float, default=10.0, help='Lambda value for FKD steering')
     parser.add_argument('--resample_frequency', type=int, default=1, help='Resampling frequency for FKD steering')
     parser.add_argument('--no_steering', action='store_true', help='If set, do not use FKD steering (for ablation)')
+    parser.add_argument('--aft_batch_size', type=int, default=128, help='Batch size for AFT loss computation')
     args = parser.parse_args()
 
     print("generating data with edm fk steering...")
@@ -308,4 +315,4 @@ if __name__ == "__main__":
     class_file = "./classes/flowers.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.num_steps, args.lmda, args.resample_frequency, args.no_steering)
+    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.num_steps, args.lmda, args.resample_frequency, args.no_steering, args.aft_batch_size)
