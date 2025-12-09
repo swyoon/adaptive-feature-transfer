@@ -1,4 +1,4 @@
-device=2
+device=0
 aft_score="ce"
 use_downstream=False
 learn_scales=True
@@ -6,21 +6,23 @@ num_steps=18
 
 # almost fixed
 seed=0
+dataset_name=flowers # aircraft or flowers
+prec=10 # 3 for aircraft, 10 for flowers
+num_target_images=1024 # ~3000 for aircraft, ~1000 for flowers
+steps=5000 # 10000 for aircraft, 5000 for flowers
 edm_ckpt="/NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl"
 model_ckpt="/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/model.pt"
 prior_ckpt="/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/prior.pt"
-num_target_images=3000
 
 # auto
 if [ "$use_downstream" = "True" ]; then
-    image_dir="./artifacts/251029/fk/edm_aft_no_fk_steering_${num_steps}_steps_with_downstream/flowers-${seed}"
+    image_dir="./artifacts/251029/fk/edm_aft_no_fk_steering_${num_steps}_steps_with_downstream/${dataset_name}-${seed}"
 else
-    image_dir="./artifacts/251029/fk/edm_aft_no_fk_steering_${num_steps}_steps/flowers-${seed}"
+    image_dir="./artifacts/251029/fk/edm_aft_no_fk_steering_${num_steps}_steps/${dataset_name}-${seed}"
 fi
 
 # fixed
 pretrained_model=vit_giant_patch14_dinov2.lvd142m
-dataset_name=flowers
 
 # auto
 if [ "$use_downstream" = "True" ]; then
@@ -36,8 +38,6 @@ feature_path="./features/${pretrained_model}_${dataset_name}_${steer_method}_${n
 train_method=aft
 model=resnet50.a1_in1k
 lr=1e-3
-prec=10
-
 # auto
 if [ "$learn_scales" = "True" ]; then
     prior_update=update
@@ -47,9 +47,11 @@ fi
 
 CUDA_VISIBLE_DEVICES=${device} python generate_edm_fk_steering.py \
     --seed ${seed} \
+    --dataset ${dataset_name} \
     --edm_ckpt ${edm_ckpt} \
     --model_ckpt ${model_ckpt} \
     --prior_ckpt ${prior_ckpt} \
+    --prec ${prec} \
     --aft_score ${aft_score} \
     --num_target_images ${num_target_images} \
     --use_downstream ${use_downstream} \
@@ -61,7 +63,8 @@ CUDA_VISIBLE_DEVICES=${device} python generate_edm_fk_steering.py \
     --model_class=${pretrained_model} \
     --directory=${image_dir} \
     --class_file=${class_file} \
-    --save_path=${feature_path}
+    --save_path=${feature_path} \
+    --batch_size=64
 
 CUDA_VISIBLE_DEVICES=${device} python run.py \
     --seed=${seed} \
@@ -73,7 +76,7 @@ CUDA_VISIBLE_DEVICES=${device} python run.py \
     --method=${train_method} \
     --prec=${prec} \
     --learn_scales=${learn_scales} \
-    --steps=5000 \
+    --steps=${steps} \
     --eval_steps=500 \
     --optimizer=adam \
     --batch_size=128 \

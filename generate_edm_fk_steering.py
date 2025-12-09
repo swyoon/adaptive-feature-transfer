@@ -13,7 +13,7 @@ from diffusion.edm.fkd.fkd_rewards import DiversityModel
 
 from models import create_model
 from prior import get_prior
-from data import get_dataset, get_loader
+from data import get_dataset, get_loader, get_out_dim
 
 class DummyFeatureDataset:
     feat_dims = [1536] # NOTE hard coded for vit_giant_patch14_dinov2.lvd142m
@@ -154,7 +154,12 @@ def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=Non
         raise ValueError(f"Unknown score: {score}")
     return rewards
 
-def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, num_steps, lmda, resample_frequency, no_steering, aft_batch_size):
+def main(seed, dataset, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args):
+    num_steps = args.num_steps
+    lmda = args.lmda
+    resample_frequency = args.resample_frequency
+    no_steering = args.no_steering
+    aft_batch_size = args.aft_batch_size
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
@@ -176,7 +181,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
 
     if use_downstream:
-        train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True)[0]
+        train_dataset = get_dataset(dataset, lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True)[0]
         train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=aft_module.input_collate_fn)
 
         for data in tqdm(train_loader):
@@ -201,6 +206,7 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
         "adaptive_resampling": True,
         "resample_frequency": resample_frequency,
         "resampling_t_start": 0,
+        "resampling_t_end": num_steps,
         "time_steps": num_steps, # set as same as resampling_t_end
         "latent_to_decode_fn": lambda x: torch.clamp(x, -1, 1) * 0.5 + 0.5,  # identity for EDM (already image-space)
         "use_smc": True if not no_steering else False,
@@ -228,10 +234,11 @@ def main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, cla
     image_ind = 0
     for _ in tqdm(range(int(np.ceil(num_target_images / config['batch_size'])))):
         # Resample a subset of feature pool for aft loss computation
-        randidx = np.random.choice(len(reward_fn_args["feature_pool_model_all"]), size=aft_batch_size, replace=False)
-        reward_fn_args["feature_pool_model"] = reward_fn_args["feature_pool_model_all"][randidx]
-        reward_fn_args["feature_pool_pretrained"] = reward_fn_args["feature_pool_pretrained_all"][randidx]
-        reward_fn_args["target_pool"] = reward_fn_args["target_pool_all"][randidx]
+        if aft_score in ["aft", "total"]:
+            randidx = np.random.choice(len(reward_fn_args["feature_pool_model_all"]), size=aft_batch_size, replace=False)
+            reward_fn_args["feature_pool_model"] = reward_fn_args["feature_pool_model_all"][randidx]
+            reward_fn_args["feature_pool_pretrained"] = reward_fn_args["feature_pool_pretrained_all"][randidx]
+            reward_fn_args["target_pool"] = reward_fn_args["target_pool_all"][randidx]
         with torch.autocast(device_type=next(iter(generator.parameters())).device.type, dtype=torch.float16):
             result = generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
 
@@ -268,9 +275,11 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--dataset', type=str, default='flowers', help='Dataset name')
     parser.add_argument('--edm_ckpt', type=str, required=True, help='Path to EDM checkpoint')
     parser.add_argument('--model_ckpt', type=str, required=True, help='Path to AFT model checkpoint')
     parser.add_argument('--prior_ckpt', type=str, required=True, help='Path to AFT prior checkpoint')
+    parser.add_argument('--prec', type=int, default=10, help='hyperparaneter beta for AFT')
     parser.add_argument('--aft_score', type=str, default='total', help='AFT score to use')
     parser.add_argument('--num_target_images', type=int, default=3000, help='Number of target images to generate')
     parser.add_argument('--use_downstream', type=str2bool, default=False, help='Whether to use downstream data for feature pool initialization')
@@ -290,15 +299,16 @@ if __name__ == "__main__":
     # prior_ckpt = "/NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/ckpts/aft/flowers/resnet50.a1_in1k_vit_giant_patch14_dinov2.lvd142m_lr1e-3_seed0/prior.pt"
 
     seed = args.seed
+    dataset = args.dataset
     edm_ckpt = args.edm_ckpt
     model_ckpt = args.model_ckpt
     prior_ckpt = args.prior_ckpt
 
     aft_module = AFTModule(
         model="resnet50.a1_in1k",
-        model_out_dim=102,
+        model_out_dim=get_out_dim(args.dataset),
         pretrained_model="vit_giant_patch14_dinov2.lvd142m",
-        prior_prec=10,
+        prior_prec=args.prec,
         model_ckpt=model_ckpt,
         prior_ckpt=prior_ckpt,
     ).to('cuda')
@@ -312,7 +322,7 @@ if __name__ == "__main__":
     num_target_images = args.num_target_images
     save_dir = args.save_dir
     
-    class_file = "./classes/flowers.txt"
+    class_file = f"./classes/{args.dataset}.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args.num_steps, args.lmda, args.resample_frequency, args.no_steering, args.aft_batch_size)
+    main(seed, dataset, edm_ckpt, aft_module, aft_score, num_target_images, save_dir, class_names, use_downstream, args)

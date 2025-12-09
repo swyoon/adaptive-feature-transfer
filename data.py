@@ -251,7 +251,7 @@ def get_dataset(dataset, get_transform=None, tokenizer=None, no_augment=True, ca
         train_ds = datasets.OxfordIIITPet(root='~/data', split='trainval', download=True, transform=train_transform)
         test_ds = datasets.OxfordIIITPet(root='~/data', split='test', download=True, transform=test_transform)
     elif dataset == 'aircraft':
-        train_ds = datasets.FGVCAircraft(root='~/data', split='trainval', download=True, transform=train_transform)
+        train_ds = datasets.FGVCAircraft(root='~/data', split='train', download=True, transform=train_transform)
         test_ds = datasets.FGVCAircraft(root='~/data', split='test', download=True, transform=test_transform)
     elif dataset == 'dtd':
         train_ds = datasets.DTD(root='~/data', split='train', download=True, transform=train_transform)
