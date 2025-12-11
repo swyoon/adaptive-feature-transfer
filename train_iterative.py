@@ -34,6 +34,7 @@ from prior import UniformPrior, get_prior, get_btune_prior
 from diffusion.edm.model import EDM
 from diffusion.edm.fkd.fkd_rewards import DiversityModel
 from generate_edm_fk_steering import AFTModule, do_aft_score
+from schedulers import WarmupStableDecayScheduler
 
 
 class IterativeTrainer:
@@ -121,11 +122,8 @@ class IterativeTrainer:
             self.feature_model, self.feature_get_transform, self.feature_tokenizer, self.feature_input_collate_fn = models.create_model(
                 self.args.pretrained_model, out_dim=0, pretrained=True, extract_features=True
             )
-            
-            if torch.cuda.device_count() == 1:
-                self.feature_model.cuda()
             self.feature_model.eval()
-            print(f"Feature extraction model ({self.args.pretrained_model}) initialized and moved to GPU")
+            print(f"Feature extraction model ({self.args.pretrained_model}) initialized")
     
     def initialize_generation_models(self, model_ckpt, prior_ckpt):
         """Initialize the generation models once and reuse them."""
@@ -164,23 +162,21 @@ class IterativeTrainer:
             self.edm_generator.eval()
             print("EDM generator initialized and moved to GPU")
         else:
-            print("Reusing existing EDM generator")
+            # Move existing EDM generator to GPU
+            self.edm_generator = self.edm_generator.to('cuda')
+            print("EDM generator moved to GPU")
     
     def cleanup_generation_models(self):
-        """Clean up generation models to free GPU memory."""
+        """Move generation models to CPU to free GPU memory."""
         if self.aft_module is not None:
-            del self.aft_module
-            self.aft_module = None
-            print("AFT module cleaned up")
+            self.aft_module = self.aft_module.cpu()
+            print("AFT module moved to CPU")
         
         if self.edm_generator is not None:
-            del self.edm_generator
-            self.edm_generator = None
-            print("EDM generator cleaned up")
+            self.edm_generator = self.edm_generator.cpu()
+            print("EDM generator moved to CPU")
         
-        # Force garbage collection and clear GPU cache
-        import gc
-        gc.collect()
+        # Clear GPU cache
         torch.cuda.empty_cache()
         print("GPU memory cache cleared")
     
@@ -331,6 +327,13 @@ class IterativeTrainer:
         print(f"\n[ITERATION {iteration + 1}] Training student model...")
         print(f"Starting from global step: {self.global_steps}")
         
+        DEVICE="cuda"
+        # Move model to GPU for training
+        self.model = self.model.to(DEVICE)
+        if isinstance(self.prior, torch.nn.Module):
+            self.prior = self.prior.to(DEVICE)
+        print("Model and prior moved to GPU for training")
+        
         # Initialize optimizer if first iteration or if it doesn't exist
         if self.optimizer is None:
             # Collect model parameters
@@ -350,9 +353,18 @@ class IterativeTrainer:
             
             # Initialize scheduler with total steps across all iterations
             total_steps = self.args.steps * self.args.num_iterations # TODO: check!!!!!!!!!
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=total_steps
-            )
+            
+            if self.args.scheduler == 'warmup_stable_decay':
+                self.scheduler = WarmupStableDecayScheduler(
+                    optimizer=self.optimizer,
+                    warmup_steps=self.args.warmup_steps,
+                    stable_steps=self.args.stable_steps,
+                    total_steps=total_steps
+                )
+            else:  # cosine_annealing
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer, T_max=total_steps
+                )
         
         # Training hyperparameters
         hypers = {
@@ -377,6 +389,13 @@ class IterativeTrainer:
         self.global_steps += self.args.steps
         print(f"Updated global steps to: {self.global_steps}")
         
+        # Move model to CPU after training to free GPU memory
+        self.model = self.model.cpu()
+        if isinstance(self.prior, torch.nn.Module):
+            self.prior = self.prior.cpu()
+        torch.cuda.empty_cache()
+        print("Model and prior moved to CPU, GPU cache cleared")
+        
         return last_acc, best_acc
     
     def generate_synthetic_data(self, iteration, ckpt_dir, synthetic_dir):
@@ -396,6 +415,9 @@ class IterativeTrainer:
         # Generate synthetic data
         self._generate_with_edm(synthetic_dir, class_names)
         
+        # Move generation models to CPU after generation
+        self.cleanup_generation_models()
+        
         # Log GPU memory usage after generation
         if torch.cuda.is_available():
             memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
@@ -405,22 +427,14 @@ class IterativeTrainer:
     def _generate_with_edm(self, save_dir, class_names):
         """Generate synthetic data using EDM + FK steering."""
         DEVICE = 'cuda'
-        config = f"""
-            network_pkl: {self.args.edm_ckpt}
-            batch_size: 1
-            dtype: float16
-            num_steps: 60
-            S_churn: 40
-        """
-        config = yaml.safe_load(config)
-        
+
         # Initialize feature pools
         init_feature_pool_model = torch.empty((0, 2048)).to(DEVICE)
         init_feature_pool_pretrained = torch.empty((0, 1536)).to(DEVICE)
         init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
         
         if self.args.use_downstream:
-            train_dataset = get_dataset("flowers", self.aft_module.get_transform, self.aft_module.tokenizer, no_augment=True, cache=False)[0]
+            train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True, cache=False)[0]
             train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=self.aft_module.input_collate_fn)
 
             for data in tqdm(train_loader, desc="Loading downstream features"):
@@ -470,7 +484,7 @@ class IterativeTrainer:
         # random.seed(self.args.seed)
         
         image_ind = 0
-        for _ in tqdm(range(int(np.ceil(self.args.num_target_images / config['batch_size']))), 
+        for _ in tqdm(range(int(np.ceil(self.args.num_target_images / self.edm_generator.batch_size))), 
                      desc="Generating synthetic images"):
             with torch.autocast(device_type=next(iter(self.edm_generator.parameters())).device.type, dtype=torch.float16):
                 result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
@@ -503,6 +517,10 @@ class IterativeTrainer:
         # Use shared feature extraction model
         self.initialize_feature_extraction_model()
         
+        # Move feature model to GPU for extraction
+        self.feature_model = self.feature_model.cuda()
+        print("Feature extraction model moved to GPU")
+        
         # Create synthetic dataset
         synthetic_ds = SyntheticDataset(
             synthetic_dir, self.args.class_file, None,
@@ -533,6 +551,11 @@ class IterativeTrainer:
                 feat = self.feature_model(inputs).detach().cpu()
                 features.append(feat)
         
+        # Move feature model to CPU after extraction
+        self.feature_model = self.feature_model.cpu()
+        torch.cuda.empty_cache()
+        print("Feature extraction model moved to CPU, GPU cache cleared")
+        
         features = torch.cat(features, dim=0)
         print(f'Synthetic features shape: {features.size()}')
         
@@ -558,6 +581,10 @@ class IterativeTrainer:
         
         # Use shared feature extraction model  
         self.initialize_feature_extraction_model()
+        
+        # Move feature model to GPU for extraction
+        self.feature_model = self.feature_model.cuda()
+        print("Feature extraction model moved to GPU")
         
         # Get datasets
         train_test_dataset = get_dataset(self.args.dataset, self.feature_get_transform, self.feature_tokenizer, no_augment=True)
@@ -604,6 +631,11 @@ class IterativeTrainer:
                 
                 feat = self.feature_model(inputs).detach().cpu()
                 test_features.append(feat)
+        
+        # Move feature model to CPU after extraction
+        self.feature_model = self.feature_model.cpu()
+        torch.cuda.empty_cache()
+        print("Feature extraction model moved to CPU, GPU cache cleared")
         
         train_features = torch.cat(train_features, dim=0)
         test_features = torch.cat(test_features, dim=0)
@@ -685,17 +717,17 @@ class IterativeTrainer:
             if hasattr(self.prior, "state_dict"):
                 torch.save(self.prior.state_dict(), prior_path)
             
-            # Save checkpoints as wandb artifacts
-            if self.wandb_run and self.args.wandb_save_checkpoints:
-                artifact = wandb.Artifact(
-                    name=f"model_iter_{iteration + 1}",
-                    type="model",
-                    description=f"Model checkpoint from iteration {iteration + 1}"
-                )
-                artifact.add_file(model_path)
-                if hasattr(self.prior, "state_dict"):
-                    artifact.add_file(prior_path)
-                self.wandb_run.log_artifact(artifact)
+            # # Save checkpoints as wandb artifacts
+            # if self.wandb_run and self.args.wandb_save_checkpoints:
+            #     artifact = wandb.Artifact(
+            #         name=f"model_iter_{iteration + 1}",
+            #         type="model",
+            #         description=f"Model checkpoint from iteration {iteration + 1}"
+            #     )
+            #     artifact.add_file(model_path)
+            #     if hasattr(self.prior, "state_dict"):
+            #         artifact.add_file(prior_path)
+            #     self.wandb_run.log_artifact(artifact)
             
             # Save results
             with open(os.path.join(ckpt_dir, "results.txt"), "w") as f:
@@ -745,11 +777,6 @@ class IterativeTrainer:
             # Finish the wandb run
             self.wandb_run.finish()
             print("Wandb run finished")
-        
-        # Clean up generation models if requested
-        if self.args.cleanup_generation_models:
-            print("Cleaning up generation models...")
-            self.cleanup_generation_models()
         
         print(f"\n{'#'*80}")
         print(f"ALL {self.args.num_iterations} ITERATIONS COMPLETED SUCCESSFULLY!")
@@ -802,9 +829,12 @@ def main():
     parser.add_argument('--wandb_project', type=str, help='Wandb project name (default: aft-iterative-{dataset})')
     parser.add_argument('--wandb_name', type=str, help='Wandb run name (default: {model}_{dataset}_{iterations}iter)')
     parser.add_argument('--wandb_save_checkpoints', action='store_true', help='Save model checkpoints as wandb artifacts')
-    
-    # Memory management parameters
-    parser.add_argument('--cleanup_generation_models', action='store_true', help='Clean up generation models at the end to free GPU memory')
+        
+    # Scheduler arguments
+    parser.add_argument('--scheduler', type=str, default='cosine_annealing', choices=['cosine_annealing', 'warmup_stable_decay'],
+                      help='Type of learning rate scheduler')
+    parser.add_argument('--warmup_steps', type=int, default=1000, help='Number of warmup steps for warmup_stable_decay scheduler')
+    parser.add_argument('--stable_steps', type=int, default=5000, help='Number of stable steps for warmup_stable_decay scheduler')
     
     args = parser.parse_args()
     

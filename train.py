@@ -207,8 +207,8 @@ def train_model(model, loaders, optimizer='sgd', scheduler=None, steps=1000, eva
     print('Finished training, evaluating...')
     test_ce, test_acc, test_ent = evaluate_model(test_loader, model, criterion)
     if wandb_run:
+        epoch = step // len(loaders[0]) 
         wandb_run.log({'test_acc': test_acc, 'test_ce': test_ce, 'test_ent': test_ent, 'epoch': epoch, 'steps': steps_so_far}, step=steps_so_far)
-        
     print(f'Final test acc: {test_acc:.3f}')
 
     return test_acc, best_acc
