@@ -190,7 +190,7 @@ def train_model(model, loaders, optimizer='sgd', scheduler=None, steps=1000, eva
             
             epoch = step // len(loaders[0])
 
-            averaged_metrics.update({'test_acc': test_acc, 'test_ce': test_ce, 'test_ent': test_ent, 'epoch': epoch, 'steps': steps_so_far, 'prior_test_acc': test_prior_acc})
+            averaged_metrics.update({'test_acc': test_acc, 'test_ce': test_ce, 'test_ent': test_ent, 'epoch': epoch, 'steps': steps_so_far, 'prior_test_acc': test_prior_acc, 'lr': optimizer.param_groups[0]['lr']})
             pbar.set_description(desc)
             
             if wandb_run:

@@ -1,7 +1,7 @@
 #!/bin/bash
 device=1
 num_iterations=30
-steps=3000
+steps=1500
 num_target_images=1000
 aft_score=ce
 dataset=flowers
@@ -28,5 +28,6 @@ CUDA_VISIBLE_DEVICES=${device} python train_iterative.py \
     --original_feature_path /NFS/workspaces/tg.ahn/Collab/adaptive-feature-transfer/features/vit_giant_patch14_dinov2.lvd142m_flowers.pt \
     --aft_score ${aft_score} \
     --scheduler warmup_stable_decay \
-    --warmup_steps 30 \
-    --stable_steps 0
+    --warmup_steps 150 \
+    --stable_steps 0 \
+    --decay_steps 1350

@@ -351,15 +351,12 @@ class IterativeTrainer:
             else:
                 self.optimizer = torch.optim.Adam(param_groups)
             
-            # Initialize scheduler with total steps across all iterations
-            total_steps = self.args.steps * self.args.num_iterations # TODO: check!!!!!!!!!
-            
             if self.args.scheduler == 'warmup_stable_decay':
                 self.scheduler = WarmupStableDecayScheduler(
                     optimizer=self.optimizer,
                     warmup_steps=self.args.warmup_steps,
                     stable_steps=self.args.stable_steps,
-                    total_steps=total_steps
+                    decay_steps=self.args.decay_steps,
                 )
             else:  # cosine_annealing
                 self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -702,7 +699,6 @@ class IterativeTrainer:
                     'iteration': iteration + 1,
                     'iteration_last_acc': last_acc,
                     'iteration_best_acc': best_acc,
-                    'current_lr': self.scheduler.get_last_lr()[0] if self.scheduler else 0,
                     'total_synthetic_dirs': len(self.all_synthetic_dirs),
                     'training_set_size': len(train_ds) if 'train_ds' in locals() else 0,
                     'global_steps': self.global_steps,
@@ -835,7 +831,8 @@ def main():
                       help='Type of learning rate scheduler')
     parser.add_argument('--warmup_steps', type=int, default=1000, help='Number of warmup steps for warmup_stable_decay scheduler')
     parser.add_argument('--stable_steps', type=int, default=5000, help='Number of stable steps for warmup_stable_decay scheduler')
-    
+    parser.add_argument('--decay_steps', type=int, default=1000, help='Number of decay steps for warmup_stable_decay scheduler')
+
     args = parser.parse_args()
     
     # Set pretrained_models if not provided but pretrained_model is
