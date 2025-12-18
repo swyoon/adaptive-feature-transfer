@@ -356,7 +356,7 @@ class IterativeTrainer:
                     optimizer=self.optimizer,
                     warmup_steps=self.args.warmup_steps,
                     stable_steps=self.args.stable_steps,
-                    decay_steps=self.args.decay_steps,
+                    total_steps=self.args.warmup_steps + self.args.stable_steps + self.args.decay_steps,
                 )
             else:  # cosine_annealing
                 self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
