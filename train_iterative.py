@@ -201,7 +201,8 @@ class IterativeTrainer:
             except ValueError as exc:
                 raise ValueError(f"Invalid value in synthetic_sampling_ratios: {ratio_str}") from exc
 
-            assert len(ratios) == num_groups, "Number of sampling ratios must match number of dataset groups"
+            assert len(ratios) >= num_groups, f"Number of sampling ratios must match number of dataset groups, but got {len(ratios)} ratios for {num_groups} groups"
+            ratios = ratios[:num_groups]
 
         if not ratios:
             ratios = [1.0 / num_groups] * num_groups
@@ -341,10 +342,15 @@ class IterativeTrainer:
         if sampling_mode == 'ratio' and self.args.use_all_synthetic:
             dataset_groups = []
 
-            combined_reference_ds = original_train_ds
-            if previous_synthetic_ds is not None:
-                combined_reference_ds = ConcatFeatureDataset(combined_reference_ds, previous_synthetic_ds)
-            dataset_groups.append(combined_reference_ds)
+            if self.args.separate_original:
+                dataset_groups.append(original_train_ds)
+                if previous_synthetic_ds is not None:
+                    dataset_groups.append(previous_synthetic_ds)
+            else:
+                combined_reference_ds = original_train_ds
+                if previous_synthetic_ds is not None:
+                    combined_reference_ds = ConcatFeatureDataset(combined_reference_ds, previous_synthetic_ds)
+                dataset_groups.append(combined_reference_ds)
 
             if current_synthetic_ds is not None:
                 dataset_groups.append(current_synthetic_ds)
@@ -921,6 +927,7 @@ def main():
     parser.add_argument('--base_output_dir', type=str, default='./iterative_training', help='Base output directory')
     parser.add_argument('--use_all_synthetic', action='store_true', help='Use all accumulated synthetic data from previous iterations (default: use only current synthetic data)')
     parser.add_argument('--synthetic_sampling_mode', type=str, default='concat', choices=['concat', 'ratio'], help='Strategy for combining datasets when synthetic data is used')
+    parser.add_argument('--separate_original', action='store_true', help='Use separate original dataset for sampling (only for ratio mode)')
     parser.add_argument('--synthetic_sampling_ratios', type=str, help='Comma-separated ratios for fixed-ratio sampling (used when synthetic_sampling_mode=ratio)')
     
     # File paths
