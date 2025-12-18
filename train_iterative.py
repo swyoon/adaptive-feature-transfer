@@ -26,7 +26,17 @@ import wandb
 
 # Import your existing modules
 from train import train
-from data import get_dataset, get_loader, split_train, get_out_dim, FeatureDataset, SyntheticDataset, ConcatFeatureDataset
+from data import (
+    get_dataset,
+    get_loader,
+    split_train,
+    get_out_dim,
+    FeatureDataset,
+    SyntheticDataset,
+    ConcatFeatureDataset,
+    MultiFeatureDataset,
+    FixedRatioBatchSampler,
+)
 import utils as u
 import models
 from models import Concat, LinearModel, ProductLinearModel
@@ -180,6 +190,28 @@ class IterativeTrainer:
         torch.cuda.empty_cache()
         print("GPU memory cache cleared")
     
+    def _resolve_sampling_ratios(self, num_groups):
+        ratio_str = getattr(self.args, 'synthetic_sampling_ratios', None)
+        ratios = []
+
+        if ratio_str:
+            tokens = [token.strip() for token in ratio_str.split(',') if token.strip()]
+            try:
+                ratios = [float(token) for token in tokens]
+            except ValueError as exc:
+                raise ValueError(f"Invalid value in synthetic_sampling_ratios: {ratio_str}") from exc
+
+            assert len(ratios) == num_groups, "Number of sampling ratios must match number of dataset groups"
+
+        if not ratios:
+            ratios = [1.0 / num_groups] * num_groups
+        
+        total = sum(ratios)
+        if total <= 0:
+            raise ValueError("Sampling ratios must sum to a positive value")
+
+        return [value / total for value in ratios]
+
     def initialize_training_components(self, iteration=0):
         """Initialize or update training components."""
         print("Initializing training components...")
@@ -239,45 +271,59 @@ class IterativeTrainer:
             val_ds = FeatureDataset(raw_train_ds, None, indices=val_indices, split="train")
             test_ds = FeatureDataset(raw_test_ds, None, indices=None, split="test")
         
-        # Add synthetic dataset if available
+        original_train_ds = train_ds
+        train_dataset_for_loader = original_train_ds
+        batch_sampler = None
+        total_prev_synth = 0
+        current_synth_len = 0
+
+        previous_synthetic_ds = None
         if self.args.use_all_synthetic and len(self.all_synthetic_dirs) > 0:
-            print(f"Adding ALL synthetic datasets from {len(self.all_synthetic_dirs)} iterations...")
-            synthetic_datasets = []
-            
-            for i, (syn_dir, syn_features) in enumerate(zip(self.all_synthetic_dirs, self.all_synthetic_features)):
-                print(f"  - Iteration {i+1}: {syn_dir}")
-                synthetic_raw_ds = SyntheticDataset(
-                    syn_dir, self.args.class_file, None,
-                    transform=self.get_transform(train=True)
-                )
-                
-                if self.args.pretrained_models not in [None, "none"] and syn_features is not None:
-                    synthetic_ds = FeatureDataset(
-                        synthetic_raw_ds, [syn_features], 
-                        indices=None, split="train"
+            synthetic_history = list(zip(self.all_synthetic_dirs, self.all_synthetic_features))
+            if (
+                self.current_synthetic_dir is not None
+                and synthetic_history
+                and synthetic_history[-1][0] == self.current_synthetic_dir
+            ):
+                history_without_current = synthetic_history[:-1]
+            else:
+                history_without_current = synthetic_history
+
+            if history_without_current:
+                print(f"Adding ALL synthetic datasets from {len(history_without_current)} previous iterations...")
+                synthetic_datasets = []
+
+                for i, (syn_dir, syn_features) in enumerate(history_without_current, start=1):
+                    print(f"  - Iteration {i}: {syn_dir}")
+                    synthetic_raw_ds = SyntheticDataset(
+                        syn_dir, self.args.class_file, None,
+                        transform=self.get_transform(train=True)
                     )
-                else:
-                    synthetic_ds = FeatureDataset(synthetic_raw_ds, None, indices=None, split="train")
-                
-                synthetic_datasets.append(synthetic_ds)
-            
-            # Combine all synthetic datasets
-            if len(synthetic_datasets) > 0:
-                combined_synthetic_ds = synthetic_datasets[0]
+
+                    if self.args.pretrained_models not in [None, "none"] and syn_features is not None:
+                        synthetic_ds = FeatureDataset(
+                            synthetic_raw_ds, [syn_features], 
+                            indices=None, split="train"
+                        )
+                    else:
+                        synthetic_ds = FeatureDataset(synthetic_raw_ds, None, indices=None, split="train")
+
+                    synthetic_datasets.append(synthetic_ds)
+
+                previous_synthetic_ds = synthetic_datasets[0]
                 for syn_ds in synthetic_datasets[1:]:
-                    combined_synthetic_ds = ConcatFeatureDataset(combined_synthetic_ds, syn_ds)
-                
-                train_ds = ConcatFeatureDataset(train_ds, combined_synthetic_ds)
-                total_synthetic_size = sum([len(ds) for ds in synthetic_datasets])
-                print(f"Combined training set size: {len(train_ds)} (original: {len(train_ds.datasets[0])}, synthetic: {total_synthetic_size})")
-                
-        elif self.current_synthetic_dir is not None:
+                    previous_synthetic_ds = ConcatFeatureDataset(previous_synthetic_ds, syn_ds)
+                total_prev_synth = sum(len(ds) for ds in synthetic_datasets)
+                print(f"Accumulated synthetic samples (previous iterations): {total_prev_synth}")
+
+        current_synthetic_ds = None
+        if self.current_synthetic_dir is not None:
             print(f"Adding CURRENT synthetic dataset from: {self.current_synthetic_dir}")
             synthetic_raw_ds = SyntheticDataset(
                 self.current_synthetic_dir, self.args.class_file, None,
                 transform=self.get_transform(train=True)
             )
-            
+
             if self.args.pretrained_models not in [None, "none"] and self.current_synthetic_features is not None:
                 synthetic_ds = FeatureDataset(
                     synthetic_raw_ds, [self.current_synthetic_features], 
@@ -285,24 +331,83 @@ class IterativeTrainer:
                 )
             else:
                 synthetic_ds = FeatureDataset(synthetic_raw_ds, None, indices=None, split="train")
-            
-            train_ds = ConcatFeatureDataset(train_ds, synthetic_ds)
-            print(f"Combined training set size: {len(train_ds)} (original: {len(train_ds.datasets[0])}, synthetic: {sum(train_ds.lengths[1:])})")
-        
+
+            current_synthetic_ds = synthetic_ds
+            current_synth_len = len(synthetic_ds)
+            print(f"Current synthetic dataset size: {current_synth_len}")
+
+        sampling_mode = getattr(self.args, 'synthetic_sampling_mode', 'concat')
+
+        if sampling_mode == 'ratio' and self.args.use_all_synthetic:
+            dataset_groups = []
+
+            combined_reference_ds = original_train_ds
+            if previous_synthetic_ds is not None:
+                combined_reference_ds = ConcatFeatureDataset(combined_reference_ds, previous_synthetic_ds)
+            dataset_groups.append(combined_reference_ds)
+
+            if current_synthetic_ds is not None:
+                dataset_groups.append(current_synthetic_ds)
+
+            if len(dataset_groups) == 1:
+                train_dataset_for_loader = dataset_groups[0]
+                print(f"Training dataset size: {len(train_dataset_for_loader)} (ratio mode active but only one group available)")
+            else:
+                ratios = self._resolve_sampling_ratios(len(dataset_groups))
+                train_dataset_for_loader = MultiFeatureDataset(dataset_groups)
+                print("Using fixed-ratio sampling:")
+                for idx, (ds, ratio) in enumerate(zip(dataset_groups, ratios)):
+                    print(f"  - dataset[{idx}]: {len(ds)} samples, ratio {ratio:.3f}")
+                batch_sampler = FixedRatioBatchSampler(
+                    train_dataset_for_loader,
+                    ratios,
+                    self.args.batch_size,
+                )
+        else:
+            train_dataset_for_loader = original_train_ds
+            if previous_synthetic_ds is not None:
+                train_dataset_for_loader = ConcatFeatureDataset(train_dataset_for_loader, previous_synthetic_ds)
+            if current_synthetic_ds is not None:
+                train_dataset_for_loader = ConcatFeatureDataset(train_dataset_for_loader, current_synthetic_ds)
+
+            if isinstance(train_dataset_for_loader, ConcatFeatureDataset):
+                original_size = len(train_dataset_for_loader.datasets[0])
+                synthetic_size = sum(train_dataset_for_loader.lengths[1:]) if len(train_dataset_for_loader.datasets) > 1 else 0
+                print(f"Combined training set size: {len(train_dataset_for_loader)} (original: {original_size}, synthetic: {synthetic_size})")
+            else:
+                print(f"Training dataset size: {len(train_dataset_for_loader)}")
+
         # Create data loaders
         num_workers = 0
+        train_loader = get_loader(
+            train_dataset_for_loader,
+            self.args.batch_size,
+            num_workers=num_workers,
+            shuffle=True,
+            input_collate_fn=self.input_collate_fn,
+            batch_sampler=batch_sampler,
+        )
+
         if self.args.use_val:
-            loaders = [
-                get_loader(ds, self.args.batch_size, num_workers=num_workers, 
-                          shuffle=(ds is train_ds), input_collate_fn=self.input_collate_fn)
-                for ds in [train_ds, val_ds]
-            ]
+            val_loader = get_loader(
+                val_ds,
+                self.args.batch_size,
+                num_workers=num_workers,
+                shuffle=False,
+                input_collate_fn=self.input_collate_fn,
+            )
+            loaders = [train_loader, val_loader]
         else:
-            loaders = [
-                get_loader(ds, self.args.batch_size, num_workers=num_workers,
-                          shuffle=(ds is train_ds), input_collate_fn=self.input_collate_fn)
-                for ds in [train_ds, test_ds]
-            ]
+            test_loader = get_loader(
+                test_ds,
+                self.args.batch_size,
+                num_workers=num_workers,
+                shuffle=False,
+                input_collate_fn=self.input_collate_fn,
+            )
+            loaders = [train_loader, test_loader]
+
+        train_ds = train_dataset_for_loader
         
         # Initialize prior if first iteration
         if self.prior is None:
@@ -815,6 +920,8 @@ def main():
     parser.add_argument('--num_iterations', type=int, default=3, help='Number of iterations to perform')
     parser.add_argument('--base_output_dir', type=str, default='./iterative_training', help='Base output directory')
     parser.add_argument('--use_all_synthetic', action='store_true', help='Use all accumulated synthetic data from previous iterations (default: use only current synthetic data)')
+    parser.add_argument('--synthetic_sampling_mode', type=str, default='concat', choices=['concat', 'ratio'], help='Strategy for combining datasets when synthetic data is used')
+    parser.add_argument('--synthetic_sampling_ratios', type=str, help='Comma-separated ratios for fixed-ratio sampling (used when synthetic_sampling_mode=ratio)')
     
     # File paths
     parser.add_argument('--class_file', type=str, default='./classes/flowers.txt', help='Path to class file')
@@ -851,6 +958,9 @@ def main():
     print(f"  Learning rate: {args.lr}")
     print(f"  Output directory: {args.base_output_dir}")
     print(f"  Synthetic data mode: {'All accumulated' if args.use_all_synthetic else 'Current only'}")
+    print(f"  Synthetic sampling mode: {args.synthetic_sampling_mode}")
+    if args.synthetic_sampling_mode == 'ratio':
+        print(f"  Synthetic sampling ratios: {args.synthetic_sampling_ratios or 'auto-uniform'}")
     print(f"  Wandb logging: {'Yes' if args.use_wandb else 'No'}")
     if args.use_wandb:
         project_name = args.wandb_project or f"aft-iterative-{args.dataset}"

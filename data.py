@@ -1,13 +1,16 @@
 import os
 import glob
+import math
+import random
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Sampler
 from torchvision import datasets, transforms
 from torchvision import transforms, datasets
 from tqdm import tqdm
 from collections import defaultdict
 from datasets import load_dataset
 from PIL import Image
+from typing import List, Optional, Sequence
 
 class FeatureDataset(torch.utils.data.Dataset):
     def __init__(self, dataset, feature_paths, indices, split='train', feature_only=False):
@@ -151,6 +154,138 @@ class ConcatFeatureDataset(torch.utils.data.Dataset):
                 return self.datasets[i][idx]
             idx -= length
         raise IndexError("Index out of range")
+
+
+class MultiFeatureDataset(torch.utils.data.Dataset):
+    """Dataset that combines multiple feature datasets while preserving feature metadata."""
+
+    def __init__(self, datasets: Sequence[torch.utils.data.Dataset]):
+        if len(datasets) == 0:
+            raise ValueError("At least one dataset is required")
+
+        base_feat_dims = getattr(datasets[0], 'feat_dims', [])
+        base_num_features = getattr(datasets[0], 'num_features', len(base_feat_dims))
+
+        for ds in datasets[1:]:
+            feat_dims = getattr(ds, 'feat_dims', base_feat_dims)
+            num_features = getattr(ds, 'num_features', base_num_features)
+            if feat_dims != base_feat_dims:
+                raise ValueError("Feature dimensions must match across datasets")
+            if num_features != base_num_features:
+                raise ValueError("Number of features must match across datasets")
+
+        self.datasets: List[torch.utils.data.Dataset] = list(datasets)
+        self.lengths: List[int] = [len(ds) for ds in self.datasets]
+        self.offsets: List[int] = []
+        running_total = 0
+        for length in self.lengths:
+            self.offsets.append(running_total)
+            running_total += length
+
+        self.total_length = running_total
+        self.feat_dims = base_feat_dims
+        self.num_features = base_num_features
+
+    def __len__(self):
+        return self.total_length
+
+    def __getitem__(self, idx):
+        for dataset, length in zip(self.datasets, self.lengths):
+            if idx < length:
+                return dataset[idx]
+            idx -= length
+        raise IndexError("Index out of range")
+
+
+class FixedRatioBatchSampler(Sampler[List[int]]):
+    """Batch sampler that draws a fixed ratio of samples from each dataset."""
+
+    def __init__(
+        self,
+        dataset: MultiFeatureDataset,
+        ratios: Sequence[float],
+        batch_size: int,
+        shuffle: Optional[bool] = True,
+    ):
+        if not isinstance(dataset, MultiFeatureDataset):
+            raise TypeError("dataset must be an instance of MultiFeatureDataset")
+        if len(ratios) != len(dataset.datasets):
+            raise ValueError("Number of ratios must match number of datasets")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        total_ratio = sum(ratios)
+        if total_ratio <= 0:
+            raise ValueError("Sum of ratios must be positive")
+
+        # Normalize ratios to sum to 1 for stability
+        self.ratios = [float(r) / total_ratio for r in ratios]
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+        self.num_batches = max([math.ceil(length / c) for length, c in zip(dataset.lengths, self._counts_for_batch(batch_size))])
+
+        self.lengths = dataset.lengths
+        self.offsets = dataset.offsets
+        
+        self.shuffle = shuffle
+
+        self.indices = [list(range(length)) for length in self.lengths]     
+    
+    def _get_data_indices(self, dataset_index: int) -> List[int]:
+        result = self.indices[dataset_index].copy()
+        if self.shuffle:
+            random.shuffle(result)
+        return result
+
+    def __len__(self):
+        return self.num_batches
+
+    def _counts_for_batch(self, batch_size: int) -> List[int]:
+        raw_counts = [ratio * batch_size for ratio in self.ratios]
+        counts = [int(math.floor(x)) for x in raw_counts]
+        remainder = batch_size - sum(counts)
+        if remainder > 0:
+            # Distribute remaining samples based on largest fractional parts
+            fractional = [(raw_counts[i] - counts[i], i) for i in range(len(raw_counts))]
+            fractional.sort(reverse=True)
+            for _, idx in fractional[:remainder]:
+                counts[idx] += 1
+        return counts
+
+            
+    def __iter__(self):
+        indices = [self._get_data_indices(dataset_index) for dataset_index in range(len(self.indices))]
+
+        counts = self._counts_for_batch(self.batch_size)
+
+        for dataset_index in range(len(self.indices)):
+            while len(indices[dataset_index]) < counts[dataset_index]:
+                indices[dataset_index].extend(self._get_data_indices(dataset_index))
+
+
+        max_index = len(self.dataset.datasets) - 1
+
+        for _ in range(self.num_batches):
+            batch_indices: List[int] = []
+            for dataset_index, count in enumerate(counts):
+                if dataset_index > max_index or count <= 0:
+                    continue
+                length = self.lengths[dataset_index]
+                if length == 0:
+                    continue
+
+                sampled = torch.tensor(indices[dataset_index][:count])
+                indices[dataset_index] = indices[dataset_index][count:]
+                while len(indices[dataset_index]) < counts[dataset_index]:
+                    indices[dataset_index].extend(self._get_data_indices(dataset_index))
+
+                batch_indices.extend((sampled + self.offsets[dataset_index]).tolist())
+
+            if batch_indices and self.shuffle:
+                permutation = torch.randperm(len(batch_indices))
+                batch_indices = [batch_indices[i] for i in permutation.tolist()]
+
+            yield batch_indices
 
 class CachedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
@@ -384,7 +519,7 @@ def split_train(train_ds, train_frac, val_frac):
     train_ds, val_ds, _ = random_split(train_ds, [train_frac, val_frac, 1 - (train_frac + val_frac)], generator=torch.Generator().manual_seed(42))
     return train_ds, val_ds
 
-def get_loader(ds, batch_size, num_workers=0, shuffle=False, input_collate_fn=None):
+def get_loader(ds, batch_size, num_workers=0, shuffle=False, input_collate_fn=None, sampler=None, batch_sampler=None):
     if input_collate_fn is not None:
         if isinstance(ds, FeatureDataset):
             if not ds.feature_only:
@@ -402,14 +537,23 @@ def get_loader(ds, batch_size, num_workers=0, shuffle=False, input_collate_fn=No
                 collate_fn = lambda batch: input_collate_fn(batch)
     else:
         collate_fn = None
-    return DataLoader(
-        ds, 
-        batch_size=batch_size, 
-        shuffle=shuffle, 
-        num_workers=num_workers,
-        pin_memory=True,
-        collate_fn=collate_fn
-    )
+    loader_kwargs = {
+        'num_workers': num_workers,
+        'pin_memory': True,
+        'collate_fn': collate_fn,
+    }
+
+    if batch_sampler is not None:
+        loader_kwargs['batch_sampler'] = batch_sampler
+        # DataLoader ignores batch_size and sampler when batch_sampler provided
+    else:
+        loader_kwargs['batch_size'] = batch_size
+        if sampler is not None:
+            loader_kwargs['sampler'] = sampler
+            shuffle = False
+        loader_kwargs['shuffle'] = shuffle
+
+    return DataLoader(ds, **loader_kwargs)
 
 def get_out_dim(dataset):
     if dataset == 'cifar10':
