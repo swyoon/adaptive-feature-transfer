@@ -470,6 +470,7 @@ class IterativeTrainer:
                     decay_steps=self.args.decay_steps,
                 )
             else:  # cosine_annealing
+                total_steps = self.args.steps * self.args.num_iterations
                 self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                     self.optimizer, T_max=total_steps
                 )
@@ -592,8 +593,7 @@ class IterativeTrainer:
         # random.seed(self.args.seed)
         
         image_ind = 0
-        for _ in tqdm(range(int(np.ceil(self.args.num_target_images / self.edm_generator.batch_size))), 
-                     desc="Generating synthetic images"):
+        for _ in tqdm(range(self.args.num_target_images), desc="Generating synthetic images"): # NOTE: assuming generating one image per iteration
             with torch.autocast(device_type=next(iter(self.edm_generator.parameters())).device.type, dtype=torch.float16):
                 result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
             
