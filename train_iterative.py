@@ -152,6 +152,7 @@ class IterativeTrainer:
             prior_prec=self.args.prec,
             model_ckpt=model_ckpt,
             prior_ckpt=prior_ckpt,
+            method=self.args.method
         ).to('cuda')
         print("AFT module created with updated checkpoints")
         
@@ -162,7 +163,7 @@ class IterativeTrainer:
                 network_pkl: {self.args.edm_ckpt}
                 batch_size: 1
                 dtype: float16
-                num_steps: 60
+                num_steps: {self.args.time_steps}
                 S_churn: 40
             """
             config = yaml.safe_load(config)
@@ -538,7 +539,13 @@ class IterativeTrainer:
         DEVICE = 'cuda'
 
         # Initialize feature pools
-        init_feature_pool_model = torch.empty((0, 2048)).to(DEVICE)
+        if "resnet50" in self.args.model_class:
+            feature_dim_model = 2048
+        elif "resnet18" in self.args.model_class:
+            feature_dim_model = 512
+        else:
+            raise ValueError(f"Unknown model class for feature dimension: {self.args.model_class}")
+        init_feature_pool_model = torch.empty((0, feature_dim_model)).to(DEVICE)
         init_feature_pool_pretrained = torch.empty((0, 1536)).to(DEVICE)
         init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
         
@@ -562,13 +569,13 @@ class IterativeTrainer:
         
         FKD_ARGS = {
             "potential_type": "diff",
-            "lmbda": 1.0,
+            "lmbda": self.args.lmbda,
             "num_particles": 4,
             "adaptive_resampling": True,
-            "resample_frequency": 5,
-            "resampling_t_start": 0,
-            "resampling_t_end": 60,
-            "time_steps": 60,
+            "resample_frequency": self.args.resample_frequency,
+            "resampling_t_start": self.args.resampling_t_start,
+            "resampling_t_end": self.args.resampling_t_end,
+            "time_steps": self.args.time_steps,
             "latent_to_decode_fn": lambda x: torch.clamp(x, -1, 1) * 0.5 + 0.5,
             "use_smc": True if not self.args.no_steering else False,
             "output_dir": "./outputs/generated/fkd_results",
@@ -946,6 +953,14 @@ def main():
     parser.add_argument('--warmup_steps', type=int, default=1000, help='Number of warmup steps for warmup_stable_decay scheduler')
     parser.add_argument('--stable_steps', type=int, default=5000, help='Number of stable steps for warmup_stable_decay scheduler')
     parser.add_argument('--decay_steps', type=int, default=1000, help='Number of decay steps for warmup_stable_decay scheduler')
+
+    # fk steering
+    parser.add_argument("--lmbda", type=float, default=1.0, help="Lambda parameter for FK steering")
+    parser.add_argument("--resample_frequency", type=int, default=5, help="Resample frequency for FK steering")
+    parser.add_argument("--resampling_t_start", type=int, default=0, help="Resampling start time step for FK steering")
+    parser.add_argument("--resampling_t_end", type=int, default=60, help="Resampling end time step for FK steering")
+    parser.add_argument("--time_steps", type=int, default=60, help="Number of time steps for FK steering")
+
 
     args = parser.parse_args()
     

@@ -7,6 +7,8 @@ import torch.nn as nn
 from PIL import Image
 from typing import Optional, Union
 
+import warnings
+
 from . import dnnlib
 from .fkd import FKD, FKD_ARGS_DEFAULTS
 
@@ -132,23 +134,29 @@ class EDM(nn.Module):
         output_dir = fkd_args.get("output_dir", "./fkd_results")
         # set EDM parameters to fkd_args
         self.batch_size = fkd_args["num_particles"]
-        if "time_steps" in fkd_args:
-            assert fkd_args["time_steps"] == self.num_steps, "time_steps in fkd_args must equal to self.num_steps"
-        fkd_args["time_steps"] = self.num_steps
+        if fkd_args["resampling_t_start"] == 0:
+            # raise NotImplementedError("resampling_t_start==0 is not implemented")
+            warnings.warn("fkd_args['resampling_t_start']=0 is not implemented, setting to 1")
+            fkd_args["resampling_t_start"] = 1
+        if fkd_args["resampling_t_end"] is None:
+            fkd_args["resampling_t_end"] = self.num_steps
 
-        assert self.S_churn > 0 and self.S_noise > 0, "For FKD steering, S_churn and S_noise must be greater than 0."
+        fkd_args["time_steps"] = self.num_steps
+        
+        assert (
+            self.S_churn > 0 and self.S_noise > 0
+        ), "For FKD steering, S_churn and S_noise must be greater than 0."
 
         if latents is None:
             latents = torch.randn(
                 [
-                    1,
+                    self.batch_size,
                     self.net.img_channels,
                     self.net.img_resolution,
                     self.net.img_resolution,
                 ],
                 device=device,
             )
-            latents = latents.repeat(self.batch_size, 1, 1, 1)
         if class_label is None:
             if self.net.label_dim:
                 class_label = torch.randint(self.net.label_dim, (), device="cpu").item()
@@ -156,12 +164,14 @@ class EDM(nn.Module):
             if self.net.label_dim:
                 class_labels = torch.eye(self.net.label_dim, device=device)[
                     torch.tensor([class_label] * self.batch_size, device=device)
-                ]
+                ]  # one-hot encoding
+        # elif isinstance(class_label, list):  # one-hot encoded vector of the same class for all particles
+        #     class_labels = class_label
+        #     class_label = class_labels.argmax(dim=1)[0].item()
 
         reward_fn_args["targets"] = torch.tensor([class_label] * self.batch_size, device=device) # TODO: add conditioning
-            
         # Set up for FK-steering
-
+        reward_fn_args["prompts"] = class_label
         if fkd_args is not None and fkd_args.get("use_smc", False):
             self.fkd = FKD(
                 reward_fn=reward_fn,
@@ -210,19 +220,19 @@ class EDM(nn.Module):
                     denoised = self.net(x_next, t_next, class_labels).to(dtype)
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
-                x0_for_reward = denoised
+                x0_for_reward = denoised.float()
             else:
-                x0_for_reward = denoised
+                x0_for_reward = denoised.float()
 
             # FK steering
             if self.fkd is not None:
                 # latents( current population) and x0 predictions are required
                 # in EDM, "latents" == image-sapce sample x; x0_preds == x0 (clean)
                 x_next, current_pop_images = self.fkd.resample(
-                    sampling_idx=i,
+                    sampling_idx=i+1, # note first proposal to T-1 already done 
                     latents=x_next,
                     x0_preds=x0_for_reward,
-                    reward_fn_args=reward_fn_args
+                    reward_fn_args=reward_fn_args,
                 )
                 # visualize and save it in the ouput_dir
                 if fkd_args["print_rewards"] and current_pop_images is not None:

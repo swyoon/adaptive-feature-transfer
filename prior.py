@@ -39,9 +39,10 @@ class Prior:
     def pretrain(self, optimizer, steps):
         return
     
-class UniformPrior(Prior):
+class UniformPrior(Prior, nn.Module):
     def __init__(self):
-        super().__init__()
+        Prior.__init__(self)
+        nn.Module.__init__(self)
     def log_prob(self, *args, **kwargs):
         return 0
 

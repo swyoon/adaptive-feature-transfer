@@ -12,7 +12,7 @@ from diffusion.edm.model import EDM
 from diffusion.edm.fkd.fkd_rewards import DiversityModel
 
 from models import create_model
-from prior import get_prior
+from prior import get_prior, UniformPrior
 from data import get_dataset, get_loader, get_out_dim
 
 class DummyFeatureDataset:
@@ -22,7 +22,7 @@ class DummyFeatureDataset:
         return 1
 
 class AFTModule(torch.nn.Module):
-    def __init__(self, model, model_out_dim, pretrained_model, prior_prec, model_ckpt, prior_ckpt, **kwargs):
+    def __init__(self, model, model_out_dim, pretrained_model, prior_prec, model_ckpt, prior_ckpt, method="aft", **kwargs):
         super().__init__()
         self.model, get_transform, tokenizer, input_collate_fn = create_model(
         model, out_dim=model_out_dim, pretrained=False
@@ -45,17 +45,20 @@ class AFTModule(torch.nn.Module):
 
         ds = DummyFeatureDataset()
         train_ds = DummyFeatureDataset()
-
-        self.prior = get_prior(
-            self.model.feat_dim,
-            ds,
-            prior_prec,
-            learn_scales=False,
-            tensor_product=False, # NOTE: should be true if experimenting with dataset == "snli-ve",
-            prior_type="kernel",
-        )
-        prior_state = torch.load(prior_ckpt, map_location="cpu")
-        self.prior.load_state_dict(prior_state, strict=True)
+        
+        if method == "aft":
+            self.prior = get_prior(
+                self.model.feat_dim,
+                ds,
+                prior_prec,
+                learn_scales=False,
+                tensor_product=False, # NOTE: should be true if experimenting with dataset == "snli-ve",
+                prior_type="kernel",
+            )
+            prior_state = torch.load(prior_ckpt, map_location="cpu")
+            self.prior.load_state_dict(prior_state, strict=True)
+        else:
+            self.prior = UniformPrior()
     
     def entropy(self, x):
         x = self.transform(x)
