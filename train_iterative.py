@@ -560,7 +560,11 @@ class IterativeTrainer:
             class_names = [line.strip() for line in f.readlines()]
         
         # Generate synthetic data
-        self._generate_with_edm(synthetic_dir, class_names)
+        if self.args.linear_data_size_scaling:
+            num_target_images = self.args.num_target_images * (iteration + 1)
+        else:
+            num_target_images = self.args.num_target_images
+        self._generate_with_edm(synthetic_dir, class_names, num_target_images)
         
         # Move generation models to CPU after generation
         self.cleanup_generation_models()
@@ -571,7 +575,7 @@ class IterativeTrainer:
             memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
             print(f"GPU memory after generation - Allocated: {memory_allocated:.2f} GB, Reserved: {memory_reserved:.2f} GB")
     
-    def _generate_with_edm(self, save_dir, class_names):
+    def _generate_with_edm(self, save_dir, class_names, num_target_images):
         """Generate synthetic data using EDM + FK steering."""
         DEVICE = 'cuda'
 
@@ -637,7 +641,7 @@ class IterativeTrainer:
         # random.seed(self.args.seed)
         
         image_ind = 0
-        for _ in tqdm(range(self.args.num_target_images), desc="Generating synthetic images"): # NOTE: assuming generating one image per iteration
+        for _ in tqdm(range(num_target_images), desc="Generating synthetic images"): # NOTE: assuming generating one image per iteration
             with torch.autocast(device_type=next(iter(self.edm_generator.parameters())).device.type, dtype=torch.float16):
                 result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
             
@@ -1005,6 +1009,9 @@ def main():
     parser.add_argument('--initial_synthetic_dataset_size', type=int, default=40000, help='Size of the initial synthetic dataset to use')
     parser.add_argument('--group_initial_synthetic_dataset_with_prev_syn', action='store_true', help='Group the initial synthetic dataset with previous synthetic datasets when using all accumulated synthetic data')
     args = parser.parse_args()
+
+    # linear data size scaling
+    parser.add_argument('--linear_data_size_scaling', action='store_true', help='Scale training data size linearly with iteration number (e.g., iter 1: x, iter 2: 2x, etc.)')
     
     # Set pretrained_models if not provided but pretrained_model is
     if hasattr(args, 'pretrained_model') and not hasattr(args, 'pretrained_models'):
