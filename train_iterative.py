@@ -279,6 +279,18 @@ class IterativeTrainer:
         total_prev_synth = 0
         current_synth_len = 0
 
+        # Incorporate synthetic datasets
+        if self.args.use_synthetic_from_beginning:
+            initial_synthetic_dir = self.args.initial_synthetic_dir
+            initial_synthetic_feature_dir = self.args.initial_synthetic_feature_dir
+
+            initial_synthetic_raw_ds = SyntheticDataset(initial_synthetic_dir, self.args.class_file, self.args.initial_synthetic_dataset_size, transform=self.get_transform(train=True))
+            initial_synthetic_ds = FeatureDataset(
+                initial_synthetic_raw_ds, [initial_synthetic_feature_dir], 
+                indices=None, split="train"
+            )
+            print(f"Initial synthetic dataset size: {len(initial_synthetic_ds)}")
+
         previous_synthetic_ds = None
         if self.args.use_all_synthetic and len(self.all_synthetic_dirs) > 0:
             synthetic_history = list(zip(self.all_synthetic_dirs, self.all_synthetic_features))
@@ -342,19 +354,42 @@ class IterativeTrainer:
 
         if sampling_mode == 'ratio' and self.args.use_all_synthetic:
             dataset_groups = []
-
-            if self.args.separate_original:
-                dataset_groups.append(original_train_ds)
-                if previous_synthetic_ds is not None:
-                    dataset_groups.append(previous_synthetic_ds)
+            
+            if self.args.use_synthetic_from_beginning:
+                if self.args.separate_original:
+                    if self.args.group_initial_synthetic_dataset_with_prev_syn:
+                        dataset_groups.append(original_train_ds)
+                        combined_ds = initial_synthetic_ds
+                        if previous_synthetic_ds is not None:
+                            combined_ds = ConcatFeatureDataset(combined_ds, previous_synthetic_ds)
+                        dataset_groups.append(combined_ds)
+                    else:
+                        combined_ds = original_train_ds
+                        combined_ds = ConcatFeatureDataset(combined_ds, initial_synthetic_ds)
+                        dataset_groups.append(combined_ds)
+                        if previous_synthetic_ds is not None:
+                            dataset_groups.append(previous_synthetic_ds)
+                else:
+                    combined_ds = original_train_ds
+                    combined_ds = ConcatFeatureDataset(combined_ds, initial_synthetic_ds)
+                    if previous_synthetic_ds is not None:
+                        combined_ds = ConcatFeatureDataset(combined_ds, previous_synthetic_ds)
+                    dataset_groups.append(combined_ds)
+                if current_synthetic_ds is not None:
+                    dataset_groups.append(current_synthetic_ds)
             else:
-                combined_reference_ds = original_train_ds
-                if previous_synthetic_ds is not None:
-                    combined_reference_ds = ConcatFeatureDataset(combined_reference_ds, previous_synthetic_ds)
-                dataset_groups.append(combined_reference_ds)
+                if self.args.separate_original:
+                    dataset_groups.append(original_train_ds)
+                    if previous_synthetic_ds is not None:
+                        dataset_groups.append(previous_synthetic_ds)
+                else:
+                    combined_ds = original_train_ds
+                    if previous_synthetic_ds is not None:
+                        combined_ds = ConcatFeatureDataset(combined_ds, previous_synthetic_ds)
+                    dataset_groups.append(combined_ds)
 
-            if current_synthetic_ds is not None:
-                dataset_groups.append(current_synthetic_ds)
+                if current_synthetic_ds is not None:
+                    dataset_groups.append(current_synthetic_ds)
 
             if len(dataset_groups) == 1:
                 train_dataset_for_loader = dataset_groups[0]
@@ -372,6 +407,8 @@ class IterativeTrainer:
                 )
         else:
             train_dataset_for_loader = original_train_ds
+            if self.args.use_synthetic_from_beginning:
+                train_dataset_for_loader = ConcatFeatureDataset(train_dataset_for_loader, initial_synthetic_ds)
             if previous_synthetic_ds is not None:
                 train_dataset_for_loader = ConcatFeatureDataset(train_dataset_for_loader, previous_synthetic_ds)
             if current_synthetic_ds is not None:
@@ -961,7 +998,12 @@ def main():
     parser.add_argument("--resampling_t_end", type=int, default=60, help="Resampling end time step for FK steering")
     parser.add_argument("--time_steps", type=int, default=60, help="Number of time steps for FK steering")
 
-
+    # initial synthetic dataset
+    parser.add_argument('--use_synthetic_from_beginning', action='store_true', help='Use synthetic data from the beginning of training (not just in later iterations)')
+    parser.add_argument('--initial_synthetic_dir', type=str, help='Path to initial synthetic dataset images')
+    parser.add_argument('--initial_synthetic_feature_dir', type=str, help='Path to initial synthetic dataset features')
+    parser.add_argument('--initial_synthetic_dataset_size', type=int, default=40000, help='Size of the initial synthetic dataset to use')
+    parser.add_argument('--group_initial_synthetic_dataset_with_prev_syn', action='store_true', help='Group the initial synthetic dataset with previous synthetic datasets when using all accumulated synthetic data')
     args = parser.parse_args()
     
     # Set pretrained_models if not provided but pretrained_model is
