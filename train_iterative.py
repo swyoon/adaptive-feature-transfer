@@ -508,7 +508,7 @@ class IterativeTrainer:
         
         return last_acc, best_acc
     
-    def generate_synthetic_data(self, iteration, ckpt_dir, synthetic_dir):
+    def generate_synthetic_data(self, iteration, ckpt_dir, synthetic_dir, train_loader):
         """Generate synthetic data using the trained model."""
         print(f"\n[ITERATION {iteration + 1}] Generating synthetic data...")
         
@@ -523,7 +523,7 @@ class IterativeTrainer:
             class_names = [line.strip() for line in f.readlines()]
         
         # Generate synthetic data
-        self._generate_with_edm(synthetic_dir, class_names)
+        self._generate_with_edm(synthetic_dir, class_names, train_loader)
         
         # Move generation models to CPU after generation
         self.cleanup_generation_models()
@@ -534,39 +534,38 @@ class IterativeTrainer:
             memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
             print(f"GPU memory after generation - Allocated: {memory_allocated:.2f} GB, Reserved: {memory_reserved:.2f} GB")
     
-    def _generate_with_edm(self, save_dir, class_names):
+    def _generate_with_edm(self, save_dir, class_names, train_loader):
         """Generate synthetic data using EDM + FK steering."""
         DEVICE = 'cuda'
 
-        # Initialize feature pools
-        if "resnet50" in self.args.model_class:
-            feature_dim_model = 2048
-        elif "resnet18" in self.args.model_class:
-            feature_dim_model = 512
-        else:
-            raise ValueError(f"Unknown model class for feature dimension: {self.args.model_class}")
-        init_feature_pool_model = torch.empty((0, feature_dim_model)).to(DEVICE)
-        init_feature_pool_pretrained = torch.empty((0, 1536)).to(DEVICE)
-        init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
-        
-        if self.args.use_downstream:
-            train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True, cache=False)[0]
-            train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=self.aft_module.input_collate_fn)
+        feature_model_list = []
 
-            for data in tqdm(train_loader, desc="Loading downstream features"):
-                if isinstance(data, (tuple, list)):
-                    inputs, labels = data
-                else:
-                    inputs = data
+        if self.args.aft_score in ["aft", "total"]:
+            with torch.no_grad():
+                print("Extracting model features for aft steering... max total model feature pool size:", self.args.max_pool_size)
+                n_pool = 0
+                for batch in tqdm(train_loader, desc="Extracting model features"):
+                    inputs = batch[0]
+                    n_pool += len(inputs)
+                    if n_pool > self.args.max_pool_size:
+                        break
+                    
+                    inputs = inputs.to(DEVICE)
+                    _, features_model = self.aft_module.model(inputs, return_feat=True) # Use this instead of get_model_feature to avoid duplicate transforms
+                    feature_model_list.append(features_model.detach())        
+
+                total_feature_pool_model = torch.cat(feature_model_list, dim=0)
+                print(f"Extracted model features shape: {total_feature_pool_model.size()}")
                 
-                inputs = inputs.to(DEVICE)
-                feature_model = self.aft_module.get_model_feature(inputs)
-                feature_pretrained = self.aft_module.get_pretrained_feature(inputs)
-                
-                init_feature_pool_model = torch.cat([init_feature_pool_model, feature_model], dim=0)
-                init_feature_pool_pretrained = torch.cat([init_feature_pool_pretrained, feature_pretrained], dim=0)
-                init_target_pool = torch.cat([init_target_pool, labels.to(DEVICE)], dim=0)
-        
+                # change to infinite loader (used for steering)
+                def infinite_loader(loader):
+                    while True:
+                        for batch in loader:
+                            yield batch
+                train_loader = infinite_loader(train_loader)
+        else:
+            # No features needed
+            total_feature_pool_model = None
         FKD_ARGS = {
             "potential_type": "diff",
             "lmbda": self.args.lmbda,
@@ -587,20 +586,25 @@ class IterativeTrainer:
         reward_fn = do_aft_score
 
         reward_fn_args = {
-            "feature_pool_model": init_feature_pool_model,
-            "feature_pool_pretrained": init_feature_pool_pretrained,
-            "target_pool": init_target_pool,
+            "feature_pool_model": None, # sampled later
+            "feature_pool_pretrained": None, # sampled later
             "aft_module": self.aft_module,
             "score": self.args.aft_score,
         }
         
-        # # Set seeds
-        # torch.manual_seed(self.args.seed)
-        # np.random.seed(self.args.seed)
-        # random.seed(self.args.seed)
-        
+
         image_ind = 0
         for _ in tqdm(range(self.args.num_target_images), desc="Generating synthetic images"): # NOTE: assuming generating one image per iteration
+            # Resample a subset of feature pool for aft loss computation
+            if self.args.aft_score in ["aft", "total"]:
+                randidx = np.random.choice(len(total_feature_pool_model), size=self.args.aft_batch_size, replace=False)
+                reward_fn_args["feature_pool_model"] = total_feature_pool_model[randidx]
+                feature_pool_pretrained = []
+                for _ in range(self.args.aft_batch_size//self.args.batch_size):
+                    batch = next(train_loader)
+                    feature_pool_pretrained.append(batch[1].to(DEVICE))
+                assert len(batch) == 3, "Expected batch to contain (inputs, features, labels)"
+                reward_fn_args["feature_pool_pretrained"] = torch.cat(feature_pool_pretrained, dim=0)
             with torch.autocast(device_type=next(iter(self.edm_generator.parameters())).device.type, dtype=torch.float16):
                 result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
             
@@ -615,13 +619,7 @@ class IterativeTrainer:
                 Image.fromarray(image_np, "RGB").save(image_path)
                 image_ind += 1
             
-            # Update feature pools
-            images = torch.clamp(images, -1., 1.) * 0.5 + 0.5
-            features_model = self.aft_module.get_model_feature(images)
-            features_pretrained = self.aft_module.get_pretrained_feature(images)
-            
-            reward_fn_args["feature_pool_model"] = torch.cat([reward_fn_args["feature_pool_model"], features_model], dim=0)
-            reward_fn_args["feature_pool_pretrained"] = torch.cat([reward_fn_args["feature_pool_pretrained"], features_pretrained], dim=0)
+            # No feature pool update during generation
     
     def extract_synthetic_features(self, iteration, synthetic_dir, features_dir):
         """Extract teacher features for synthetic data."""
@@ -849,7 +847,7 @@ class IterativeTrainer:
                 f.write(f"Best test acc: {best_acc:.3f}\n")
             
             # Step 6: Generate synthetic data for next iteration
-            self.generate_synthetic_data(iteration, ckpt_dir, synthetic_dir)
+            self.generate_synthetic_data(iteration, ckpt_dir, synthetic_dir, loaders[0])
             
             # Update synthetic directory for next iteration
             self.current_synthetic_dir = synthetic_dir
@@ -926,8 +924,9 @@ def main():
     parser.add_argument('--edm_ckpt', type=str, required=True, help='Path to EDM checkpoint')
     parser.add_argument('--aft_score', type=str, default='total', help='AFT score type')
     parser.add_argument('--num_target_images', type=int, default=3000, help='Number of synthetic images to generate')
-    parser.add_argument('--use_downstream', action='store_true', help='Use downstream data for feature pool initialization')
     parser.add_argument('--no_steering', action='store_true', help='Disable FK steering (use unconditional generation)')
+    parser.add_argument('--max_pool_size', type=int, default=10000, help='Maximum total model feature pool size for AFT steering')
+    parser.add_argument('--aft_batch_size', type=int, default=None, help='Batch size for AFT steering computation (default: same as batch_size)')
 
     # Iteration parameters
     parser.add_argument('--num_iterations', type=int, default=3, help='Number of iterations to perform')
@@ -969,6 +968,10 @@ def main():
         args.pretrained_models = args.pretrained_model
     elif hasattr(args, 'pretrained_models') and not hasattr(args, 'pretrained_model'):
         args.pretrained_model = args.pretrained_models
+    if args.aft_batch_size is None:
+        args.aft_batch_size = args.batch_size
+    else:
+        assert args.aft_batch_size % args.batch_size == 0, "aft_batch_size must be a multiple of batch_size due to data loader constraints"
     
     print("Starting iterative AFT training...")
     print(f"Configuration:")
