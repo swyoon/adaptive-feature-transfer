@@ -1,10 +1,10 @@
 #!/bin/bash
 device=3
 num_iterations=30
-steps=1500
-num_target_images=1000
 aft_score=ce
 dataset=flowers
+steps=1500 # 5000 for aircraft, 1500 for flowers (need to adjust warmup/decay steps accordingly)
+num_target_images=1000 # 3000 for aircraft, 1000 for flowers
 
 
 CUDA_VISIBLE_DEVICES=${device} python train_iterative.py \
@@ -35,4 +35,5 @@ CUDA_VISIBLE_DEVICES=${device} python train_iterative.py \
     --resample_frequency 2 \
     --resampling_t_start 3 \
     --resampling_t_end 14 \
-    --time_steps 18
+    --time_steps 18 \
+    --class_file classes/${dataset}.txt \

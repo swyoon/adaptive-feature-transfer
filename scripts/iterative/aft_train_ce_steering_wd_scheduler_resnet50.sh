@@ -1,10 +1,11 @@
 #!/bin/bash
 device=0
 num_iterations=30
-steps=1500
-num_target_images=1000
 aft_score=ce
 dataset=flowers
+steps=1500 # 5000 for aircraft, 1500 for flowers (need to adjust warmup/decay steps accordingly)
+num_target_images=1000 # 3000 for aircraft, 1000 for flowers
+prec=10 # 3 for aircraft, 10 for flowers
 
 
 CUDA_VISIBLE_DEVICES=${device} python train_iterative.py \
@@ -14,6 +15,7 @@ CUDA_VISIBLE_DEVICES=${device} python train_iterative.py \
     --num_iterations ${num_iterations} \
     --steps ${steps} \
     --lr 1e-3 \
+    --prec ${prec} \
     --batch_size 128 \
     --optimizer adam \
     --edm_ckpt /NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl \
@@ -34,4 +36,5 @@ CUDA_VISIBLE_DEVICES=${device} python train_iterative.py \
     --resample_frequency 2 \
     --resampling_t_start 3 \
     --resampling_t_end 14 \
-    --time_steps 18
+    --time_steps 18 \
+    --class_file classes/${dataset}.txt \
