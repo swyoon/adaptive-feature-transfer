@@ -611,7 +611,7 @@ class IterativeTrainer:
         FKD_ARGS = {
             "potential_type": "diff",
             "lmbda": self.args.lmbda,
-            "num_particles": 4,
+            "num_particles": self.args.num_particles,
             "adaptive_resampling": True,
             "resample_frequency": self.args.resample_frequency,
             "resampling_t_start": self.args.resampling_t_start,
@@ -1001,6 +1001,7 @@ def main():
     parser.add_argument("--resampling_t_start", type=int, default=0, help="Resampling start time step for FK steering")
     parser.add_argument("--resampling_t_end", type=int, default=60, help="Resampling end time step for FK steering")
     parser.add_argument("--time_steps", type=int, default=60, help="Number of time steps for FK steering")
+    parser.add_argument("--num_particles", type=int, default=4, help="Number of particles for FK steering")
 
     # initial synthetic dataset
     parser.add_argument('--use_synthetic_from_beginning', action='store_true', help='Use synthetic data from the beginning of training (not just in later iterations)')
@@ -1008,11 +1009,13 @@ def main():
     parser.add_argument('--initial_synthetic_feature_dir', type=str, help='Path to initial synthetic dataset features')
     parser.add_argument('--initial_synthetic_dataset_size', type=int, default=40000, help='Size of the initial synthetic dataset to use')
     parser.add_argument('--group_initial_synthetic_dataset_with_prev_syn', action='store_true', help='Group the initial synthetic dataset with previous synthetic datasets when using all accumulated synthetic data')
-    args = parser.parse_args()
 
     # linear data size scaling
     parser.add_argument('--linear_data_size_scaling', action='store_true', help='Scale training data size linearly with iteration number (e.g., iter 1: x, iter 2: 2x, etc.)')
-    
+
+    args = parser.parse_args()
+
+
     # Set pretrained_models if not provided but pretrained_model is
     if hasattr(args, 'pretrained_model') and not hasattr(args, 'pretrained_models'):
         args.pretrained_models = args.pretrained_model
