@@ -539,13 +539,15 @@ class IterativeTrainer:
         DEVICE = 'cuda'
 
         feature_model_list = []
+        feature_pretrained_list = []
 
         if self.args.aft_score in ["aft", "total"]:
             with torch.no_grad():
                 print("Extracting model features for aft steering... max total model feature pool size:", self.args.max_pool_size)
                 n_pool = 0
                 for batch in tqdm(train_loader, desc="Extracting model features"):
-                    inputs = batch[0]
+                    assert len(batch) == 3, "Expected batch to contain (inputs, features, labels)"
+                    inputs, features_pretrained, _ = batch
                     n_pool += len(inputs)
                     if n_pool > self.args.max_pool_size:
                         break
@@ -553,19 +555,16 @@ class IterativeTrainer:
                     inputs = inputs.to(DEVICE)
                     _, features_model = self.aft_module.model(inputs, return_feat=True) # Use this instead of get_model_feature to avoid duplicate transforms
                     feature_model_list.append(features_model.detach())        
+                    feature_pretrained_list.append(features_pretrained.to(DEVICE).detach())
 
                 total_feature_pool_model = torch.cat(feature_model_list, dim=0)
+                total_feature_pool_pretrained = torch.cat(feature_pretrained_list, dim=0)
                 print(f"Extracted model features shape: {total_feature_pool_model.size()}")
-                
-                # change to infinite loader (used for steering)
-                def infinite_loader(loader):
-                    while True:
-                        for batch in loader:
-                            yield batch
-                train_loader = infinite_loader(train_loader)
+                print(f"Extracted pretrained features shape: {total_feature_pool_pretrained.size()}")
         else:
             # No features needed
             total_feature_pool_model = None
+            total_feature_pool_pretrained = None
         FKD_ARGS = {
             "potential_type": "diff",
             "lmbda": self.args.lmbda,
@@ -599,12 +598,7 @@ class IterativeTrainer:
             if self.args.aft_score in ["aft", "total"]:
                 randidx = np.random.choice(len(total_feature_pool_model), size=self.args.aft_batch_size, replace=False)
                 reward_fn_args["feature_pool_model"] = total_feature_pool_model[randidx]
-                feature_pool_pretrained = []
-                for _ in range(self.args.aft_batch_size//self.args.batch_size):
-                    batch = next(train_loader)
-                    feature_pool_pretrained.append(batch[1].to(DEVICE))
-                assert len(batch) == 3, "Expected batch to contain (inputs, features, labels)"
-                reward_fn_args["feature_pool_pretrained"] = torch.cat(feature_pool_pretrained, dim=0)
+                reward_fn_args["feature_pool_pretrained"] = total_feature_pool_pretrained[randidx]
             with torch.autocast(device_type=next(iter(self.edm_generator.parameters())).device.type, dtype=torch.float16):
                 result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
             
@@ -970,8 +964,6 @@ def main():
         args.pretrained_model = args.pretrained_models
     if args.aft_batch_size is None:
         args.aft_batch_size = args.batch_size
-    else:
-        assert args.aft_batch_size % args.batch_size == 0, "aft_batch_size must be a multiple of batch_size due to data loader constraints"
     
     print("Starting iterative AFT training...")
     print(f"Configuration:")
