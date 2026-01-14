@@ -8,16 +8,15 @@ import random
 import argparse
 
 from diffusion.edm.model import EDM
-from diffusion.edm.fkd.fkd_rewards import DiversityModel
 
 
-def main(seed, edm_ckpt, num_target_images, save_dir, class_names):
+def main(seed, edm_ckpt, num_target_images, save_dir, class_names, num_steps, batch_size):
     DEVICE = 'cuda'
     config = f"""
         network_pkl: {edm_ckpt}
-        batch_size: 1
+        batch_size: {batch_size}
         dtype: float16
-        num_steps: 60
+        num_steps: {num_steps}
         S_churn: 40
         """
 
@@ -47,28 +46,32 @@ def main(seed, edm_ckpt, num_target_images, save_dir, class_names):
             os.makedirs(os.path.dirname(image_path), exist_ok=True)
             Image.fromarray(image_np, "RGB").save(image_path)
             image_ind += 1
+            if image_ind >= num_target_images:
+                break
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--dataset', type=str, default='flowers', help='Dataset name')
     parser.add_argument('--edm_ckpt', type=str, required=True, help='Path to EDM checkpoint')
     parser.add_argument('--num_target_images', type=int, default=3000, help='Number of target images to generate')
     parser.add_argument('--save_dir', type=str, required=True, help='Directory to save generated images')
+    parser.add_argument('--num_steps', type=int, default=18, help='Number of EDM sampling steps')
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for EDM sampling')
     args = parser.parse_args()
 
-    print("generating data with edm fk steering...")
+    print("generating data with edm...")
 
     seed = args.seed
+    dataset = args.dataset
     edm_ckpt = args.edm_ckpt
     num_target_images = args.num_target_images
     save_dir = args.save_dir
-    # seed = 0
-    # edm_ckpt = "/NFS/workspaces/tg.ahn/Collab/edm/training-runs-flowers102/00001-flowers102-64x64-cond-ddpmpp-edm-gpus1-batch32-fp32/network-snapshot-008132.pkl"
-    # num_target_images = 100000
-    # save_dir = f"./outputdir7/edm_no_steer/flowers-{seed}"
+    num_steps = args.num_steps
+    batch_size = args.batch_size
 
-    class_file = "./classes/flowers.txt"
+    class_file = f"./classes/{args.dataset}.txt"
     with open(class_file, "r") as f:
         class_names = [line.strip() for line in f.readlines()]
-    main(seed, edm_ckpt, num_target_images, save_dir, class_names)
+    main(seed, edm_ckpt, num_target_images, save_dir, class_names, num_steps, batch_size)

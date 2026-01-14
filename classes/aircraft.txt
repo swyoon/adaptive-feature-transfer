@@ -70,8 +70,8 @@ ERJ 135
 ERJ 145
 Embraer Legacy 600
 Eurofighter Typhoon
-F-16A/B
-F/A-18
+F-16A_B
+F_A-18
 Falcon 2000
 Falcon 900
 Fokker 100

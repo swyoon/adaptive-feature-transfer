@@ -75,8 +75,9 @@ def main(
     ], f"Unknown method {method}"
     out_dim = get_out_dim(dataset)
     # randomly init model
+    pretrained = kwargs.pop("pretrained", False)
     model, get_transform, tokenizer, input_collate_fn = models.create_model(
-        model_class, out_dim=out_dim, pretrained=False, **kwargs
+        model_class, out_dim=out_dim, pretrained=pretrained, **kwargs
     )  # call get_transform with train=True/False to get train/test transforms
     # train val test split
     train_ds, test_ds = get_dataset(dataset, get_transform, tokenizer, no_augment, cache)
