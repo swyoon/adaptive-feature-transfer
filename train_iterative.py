@@ -279,6 +279,18 @@ class IterativeTrainer:
         total_prev_synth = 0
         current_synth_len = 0
 
+        # Incorporate synthetic datasets
+        if self.args.use_synthetic_from_beginning:
+            initial_synthetic_dir = self.args.initial_synthetic_dir
+            initial_synthetic_feature_dir = self.args.initial_synthetic_feature_dir
+
+            initial_synthetic_raw_ds = SyntheticDataset(initial_synthetic_dir, self.args.class_file, self.args.initial_synthetic_dataset_size, transform=self.get_transform(train=True))
+            initial_synthetic_ds = FeatureDataset(
+                initial_synthetic_raw_ds, [initial_synthetic_feature_dir], 
+                indices=None, split="train"
+            )
+            print(f"Initial synthetic dataset size: {len(initial_synthetic_ds)}")
+
         previous_synthetic_ds = None
         if self.args.use_all_synthetic and len(self.all_synthetic_dirs) > 0:
             synthetic_history = list(zip(self.all_synthetic_dirs, self.all_synthetic_features))
@@ -342,19 +354,42 @@ class IterativeTrainer:
 
         if sampling_mode == 'ratio' and self.args.use_all_synthetic:
             dataset_groups = []
-
-            if self.args.separate_original:
-                dataset_groups.append(original_train_ds)
-                if previous_synthetic_ds is not None:
-                    dataset_groups.append(previous_synthetic_ds)
+            
+            if self.args.use_synthetic_from_beginning:
+                if self.args.separate_original:
+                    if self.args.group_initial_synthetic_dataset_with_prev_syn:
+                        dataset_groups.append(original_train_ds)
+                        combined_ds = initial_synthetic_ds
+                        if previous_synthetic_ds is not None:
+                            combined_ds = ConcatFeatureDataset(combined_ds, previous_synthetic_ds)
+                        dataset_groups.append(combined_ds)
+                    else:
+                        combined_ds = original_train_ds
+                        combined_ds = ConcatFeatureDataset(combined_ds, initial_synthetic_ds)
+                        dataset_groups.append(combined_ds)
+                        if previous_synthetic_ds is not None:
+                            dataset_groups.append(previous_synthetic_ds)
+                else:
+                    combined_ds = original_train_ds
+                    combined_ds = ConcatFeatureDataset(combined_ds, initial_synthetic_ds)
+                    if previous_synthetic_ds is not None:
+                        combined_ds = ConcatFeatureDataset(combined_ds, previous_synthetic_ds)
+                    dataset_groups.append(combined_ds)
+                if current_synthetic_ds is not None:
+                    dataset_groups.append(current_synthetic_ds)
             else:
-                combined_reference_ds = original_train_ds
-                if previous_synthetic_ds is not None:
-                    combined_reference_ds = ConcatFeatureDataset(combined_reference_ds, previous_synthetic_ds)
-                dataset_groups.append(combined_reference_ds)
+                if self.args.separate_original:
+                    dataset_groups.append(original_train_ds)
+                    if previous_synthetic_ds is not None:
+                        dataset_groups.append(previous_synthetic_ds)
+                else:
+                    combined_ds = original_train_ds
+                    if previous_synthetic_ds is not None:
+                        combined_ds = ConcatFeatureDataset(combined_ds, previous_synthetic_ds)
+                    dataset_groups.append(combined_ds)
 
-            if current_synthetic_ds is not None:
-                dataset_groups.append(current_synthetic_ds)
+                if current_synthetic_ds is not None:
+                    dataset_groups.append(current_synthetic_ds)
 
             if len(dataset_groups) == 1:
                 train_dataset_for_loader = dataset_groups[0]
@@ -372,6 +407,8 @@ class IterativeTrainer:
                 )
         else:
             train_dataset_for_loader = original_train_ds
+            if self.args.use_synthetic_from_beginning:
+                train_dataset_for_loader = ConcatFeatureDataset(train_dataset_for_loader, initial_synthetic_ds)
             if previous_synthetic_ds is not None:
                 train_dataset_for_loader = ConcatFeatureDataset(train_dataset_for_loader, previous_synthetic_ds)
             if current_synthetic_ds is not None:
@@ -385,7 +422,7 @@ class IterativeTrainer:
                 print(f"Training dataset size: {len(train_dataset_for_loader)}")
 
         # Create data loaders
-        num_workers = 0
+        num_workers = 4
         train_loader = get_loader(
             train_dataset_for_loader,
             self.args.batch_size,
@@ -421,7 +458,7 @@ class IterativeTrainer:
             if self.args.method == "aft":
                 self.prior = get_prior(
                     self.model.feat_dim, train_ds, self.args.prec, 
-                    learn_scales=False, tensor_product=(self.args.dataset == "snli-ve"),
+                    learn_scales=True, tensor_product=(self.args.dataset == "snli-ve"),
                     prior_type="kernel"
                 )
             else:
@@ -487,6 +524,10 @@ class IterativeTrainer:
             "prior_freq": self.args.prior_freq,
             "step_offset": self.global_steps,  # Pass current global step count
         }
+
+        if self.args.stop_prior_grad_after_one_iteration:
+            stop_prior_grad = (iteration >= 1)
+            hypers["stop_prior_grad"] = stop_prior_grad
         
         hypers["optimizer"] = self.optimizer
         hypers["scheduler"] = self.scheduler
@@ -523,7 +564,11 @@ class IterativeTrainer:
             class_names = [line.strip() for line in f.readlines()]
         
         # Generate synthetic data
-        self._generate_with_edm(synthetic_dir, class_names, train_loader)
+        if self.args.linear_data_size_scaling:
+            num_target_images = self.args.num_target_images * (iteration + 1)
+        else:
+            num_target_images = self.args.num_target_images
+        self._generate_with_edm(synthetic_dir, class_names, num_target_images, train_loader)
         
         # Move generation models to CPU after generation
         self.cleanup_generation_models()
@@ -534,7 +579,7 @@ class IterativeTrainer:
             memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
             print(f"GPU memory after generation - Allocated: {memory_allocated:.2f} GB, Reserved: {memory_reserved:.2f} GB")
     
-    def _generate_with_edm(self, save_dir, class_names, train_loader):
+    def _generate_with_edm(self, save_dir, class_names, num_target_images, train_loader):
         """Generate synthetic data using EDM + FK steering."""
         DEVICE = 'cuda'
 
@@ -568,7 +613,7 @@ class IterativeTrainer:
         FKD_ARGS = {
             "potential_type": "diff",
             "lmbda": self.args.lmbda,
-            "num_particles": 4,
+            "num_particles": self.args.num_particles,
             "adaptive_resampling": True,
             "resample_frequency": self.args.resample_frequency,
             "resampling_t_start": self.args.resampling_t_start,
@@ -593,7 +638,7 @@ class IterativeTrainer:
         
 
         image_ind = 0
-        for _ in tqdm(range(self.args.num_target_images), desc="Generating synthetic images"): # NOTE: assuming generating one image per iteration
+        for _ in tqdm(range(num_target_images), desc="Generating synthetic images"): # NOTE: assuming generating one image per iteration
             # Resample a subset of feature pool for aft loss computation
             if self.args.aft_score in ["aft", "total"]:
                 randidx = np.random.choice(len(total_feature_pool_model), size=self.args.aft_batch_size, replace=False)
@@ -635,7 +680,7 @@ class IterativeTrainer:
         )
         
         synthetic_loader = get_loader(
-            synthetic_ds, self.args.batch_size, num_workers=0, 
+            synthetic_ds, self.args.batch_size, num_workers=4, 
             shuffle=False, input_collate_fn=self.feature_input_collate_fn
         )
         
@@ -696,7 +741,7 @@ class IterativeTrainer:
         # Get datasets
         train_test_dataset = get_dataset(self.args.dataset, self.feature_get_transform, self.feature_tokenizer, no_augment=True)
         train_test_loaders = [
-            get_loader(ds, self.args.batch_size, num_workers=0, shuffle=False, input_collate_fn=self.feature_input_collate_fn)
+            get_loader(ds, self.args.batch_size, num_workers=4, shuffle=False, input_collate_fn=self.feature_input_collate_fn)
             for ds in train_test_dataset
         ]
         train_loader, test_loader = train_test_loaders
@@ -953,10 +998,23 @@ def main():
     parser.add_argument("--resampling_t_start", type=int, default=0, help="Resampling start time step for FK steering")
     parser.add_argument("--resampling_t_end", type=int, default=60, help="Resampling end time step for FK steering")
     parser.add_argument("--time_steps", type=int, default=60, help="Number of time steps for FK steering")
+    parser.add_argument("--num_particles", type=int, default=4, help="Number of particles for FK steering")
 
+    # initial synthetic dataset
+    parser.add_argument('--use_synthetic_from_beginning', action='store_true', help='Use synthetic data from the beginning of training (not just in later iterations)')
+    parser.add_argument('--initial_synthetic_dir', type=str, help='Path to initial synthetic dataset images')
+    parser.add_argument('--initial_synthetic_feature_dir', type=str, help='Path to initial synthetic dataset features')
+    parser.add_argument('--initial_synthetic_dataset_size', type=int, default=40000, help='Size of the initial synthetic dataset to use')
+    parser.add_argument('--group_initial_synthetic_dataset_with_prev_syn', action='store_true', help='Group the initial synthetic dataset with previous synthetic datasets when using all accumulated synthetic data')
+
+    # linear data size scaling
+    parser.add_argument('--linear_data_size_scaling', action='store_true', help='Scale training data size linearly with iteration number (e.g., iter 1: x, iter 2: 2x, etc.)')
+
+    parser.add_argument('--stop_prior_grad_after_one_iteration', action='store_true', help='Stop prior gradient updates after the first iteration')
 
     args = parser.parse_args()
-    
+
+
     # Set pretrained_models if not provided but pretrained_model is
     if hasattr(args, 'pretrained_model') and not hasattr(args, 'pretrained_models'):
         args.pretrained_models = args.pretrained_model

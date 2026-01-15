@@ -233,7 +233,19 @@ def create_model(model_class, out_dim, pretrained=False, extract_features=False,
         if pretrained:
             print(f"Using timm pretrained model")
         data_config = timm.data.resolve_model_data_config(model)
-        get_transform = lambda train: timm.data.create_transform(**data_config, is_training=train)
+
+        def get_timm_transform(train):
+            data_config ["interpolation"] == "bilinear"
+            transform = timm.data.create_transform(**data_config, is_training=train)
+
+            if "centercrop" in transform.transforms[1].__class__.__name__.lower():
+                size = transform.transforms[1].size
+                transform.transforms[0].size = size
+
+                transform.transforms.pop(1)
+            return transform
+        
+        get_transform = get_timm_transform
         model = TimmWrapper(model)
         tokenizer = None
         input_collate_fn = None
