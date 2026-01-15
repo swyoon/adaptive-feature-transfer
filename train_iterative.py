@@ -422,7 +422,7 @@ class IterativeTrainer:
                 print(f"Training dataset size: {len(train_dataset_for_loader)}")
 
         # Create data loaders
-        num_workers = 0
+        num_workers = 4
         train_loader = get_loader(
             train_dataset_for_loader,
             self.args.batch_size,
@@ -458,7 +458,7 @@ class IterativeTrainer:
             if self.args.method == "aft":
                 self.prior = get_prior(
                     self.model.feat_dim, train_ds, self.args.prec, 
-                    learn_scales=False, tensor_product=(self.args.dataset == "snli-ve"),
+                    learn_scales=True, tensor_product=(self.args.dataset == "snli-ve"),
                     prior_type="kernel"
                 )
             else:
@@ -524,6 +524,10 @@ class IterativeTrainer:
             "prior_freq": self.args.prior_freq,
             "step_offset": self.global_steps,  # Pass current global step count
         }
+
+        if self.args.stop_prior_grad_after_one_iteration:
+            stop_prior_grad = (iteration >= 1)
+            hypers["stop_prior_grad"] = stop_prior_grad
         
         hypers["optimizer"] = self.optimizer
         hypers["scheduler"] = self.scheduler
@@ -676,7 +680,7 @@ class IterativeTrainer:
         )
         
         synthetic_loader = get_loader(
-            synthetic_ds, self.args.batch_size, num_workers=0, 
+            synthetic_ds, self.args.batch_size, num_workers=4, 
             shuffle=False, input_collate_fn=self.feature_input_collate_fn
         )
         
@@ -737,7 +741,7 @@ class IterativeTrainer:
         # Get datasets
         train_test_dataset = get_dataset(self.args.dataset, self.feature_get_transform, self.feature_tokenizer, no_augment=True)
         train_test_loaders = [
-            get_loader(ds, self.args.batch_size, num_workers=0, shuffle=False, input_collate_fn=self.feature_input_collate_fn)
+            get_loader(ds, self.args.batch_size, num_workers=4, shuffle=False, input_collate_fn=self.feature_input_collate_fn)
             for ds in train_test_dataset
         ]
         train_loader, test_loader = train_test_loaders
@@ -1005,6 +1009,8 @@ def main():
 
     # linear data size scaling
     parser.add_argument('--linear_data_size_scaling', action='store_true', help='Scale training data size linearly with iteration number (e.g., iter 1: x, iter 2: 2x, etc.)')
+
+    parser.add_argument('--stop_prior_grad_after_one_iteration', action='store_true', help='Stop prior gradient updates after the first iteration')
 
     args = parser.parse_args()
 
