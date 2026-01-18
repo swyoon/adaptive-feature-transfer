@@ -237,10 +237,12 @@ class IterativeTrainer:
             self.model = self.model.cuda()
             print("Model moved to GPU")
         
+        use_aug = self.args.use_aug
+        
         # Get datasets
         train_ds, test_ds = get_dataset(
             self.args.dataset, self.get_transform, self.tokenizer, 
-            no_augment=True, cache=False
+            no_augment=not use_aug, cache=False
         ) # NOTE: no_augment?
         
         val_frac = 0.1 if self.args.use_val else 0
@@ -250,7 +252,7 @@ class IterativeTrainer:
         
         raw_train_ds, raw_test_ds = get_dataset(
             self.args.dataset, self.get_transform, self.tokenizer, 
-            no_augment=True, cache=False
+            no_augment=not use_aug, cache=False
         )
         
         # Handle pretrained models and features
@@ -284,7 +286,7 @@ class IterativeTrainer:
             initial_synthetic_dir = self.args.initial_synthetic_dir
             initial_synthetic_feature_dir = self.args.initial_synthetic_feature_dir
 
-            initial_synthetic_raw_ds = SyntheticDataset(initial_synthetic_dir, self.args.class_file, self.args.initial_synthetic_dataset_size, transform=self.get_transform(train=True))
+            initial_synthetic_raw_ds = SyntheticDataset(initial_synthetic_dir, self.args.class_file, self.args.initial_synthetic_dataset_size, transform=self.get_transform(train=use_aug))
             initial_synthetic_ds = FeatureDataset(
                 initial_synthetic_raw_ds, [initial_synthetic_feature_dir], 
                 indices=None, split="train"
@@ -311,7 +313,7 @@ class IterativeTrainer:
                     print(f"  - Iteration {i}: {syn_dir}")
                     synthetic_raw_ds = SyntheticDataset(
                         syn_dir, self.args.class_file, None,
-                        transform=self.get_transform(train=True)
+                        transform=self.get_transform(train=use_aug)
                     )
 
                     if self.args.pretrained_models not in [None, "none"] and syn_features is not None:
@@ -335,7 +337,7 @@ class IterativeTrainer:
             print(f"Adding CURRENT synthetic dataset from: {self.current_synthetic_dir}")
             synthetic_raw_ds = SyntheticDataset(
                 self.current_synthetic_dir, self.args.class_file, None,
-                transform=self.get_transform(train=True)
+                transform=self.get_transform(train=use_aug)
             )
 
             if self.args.pretrained_models not in [None, "none"] and self.current_synthetic_features is not None:
@@ -568,7 +570,11 @@ class IterativeTrainer:
             num_target_images = self.args.num_target_images * (iteration + 1)
         else:
             num_target_images = self.args.num_target_images
-        self._generate_with_edm(synthetic_dir, class_names, num_target_images, train_loader)
+
+        if self.args.original_aft_steering:
+            self._generate_with_edm_original(synthetic_dir, class_names)
+        else:
+            self._generate_with_edm(synthetic_dir, class_names, num_target_images, train_loader)
         
         # Move generation models to CPU after generation
         self.cleanup_generation_models()
@@ -578,6 +584,95 @@ class IterativeTrainer:
             memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
             memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
             print(f"GPU memory after generation - Allocated: {memory_allocated:.2f} GB, Reserved: {memory_reserved:.2f} GB")
+    
+    def _generate_with_edm_original(self, save_dir, class_names):
+        """Generate synthetic data using EDM + FK steering."""
+        DEVICE = 'cuda'
+
+        # Initialize feature pools
+        if "resnet50" in self.args.model_class:
+            feature_dim_model = 2048
+        elif "resnet18" in self.args.model_class:
+            feature_dim_model = 512
+        else:
+            raise ValueError(f"Unknown model class for feature dimension: {self.args.model_class}")
+        init_feature_pool_model = torch.empty((0, feature_dim_model)).to(DEVICE)
+        init_feature_pool_pretrained = torch.empty((0, 1536)).to(DEVICE)
+        init_target_pool = torch.empty((0,), dtype=torch.int64).to(DEVICE)
+        
+        if self.args.use_downstream:
+            train_dataset = get_dataset("flowers", lambda train: lambda x: torchvision.transforms.ToTensor()(x), None, no_augment=True, cache=False)[0]
+            train_loader = get_loader(train_dataset, 1, num_workers=4, shuffle=False, input_collate_fn=self.aft_module.input_collate_fn)
+
+            for data in tqdm(train_loader, desc="Loading downstream features"):
+                if isinstance(data, (tuple, list)):
+                    inputs, labels = data
+                else:
+                    inputs = data
+                
+                inputs = inputs.to(DEVICE)
+                feature_model = self.aft_module.get_model_feature(inputs)
+                feature_pretrained = self.aft_module.get_pretrained_feature(inputs)
+                
+                init_feature_pool_model = torch.cat([init_feature_pool_model, feature_model], dim=0)
+                init_feature_pool_pretrained = torch.cat([init_feature_pool_pretrained, feature_pretrained], dim=0)
+                init_target_pool = torch.cat([init_target_pool, labels.to(DEVICE)], dim=0)
+        
+        FKD_ARGS = {
+            "potential_type": "diff",
+            "lmbda": self.args.lmbda,
+            "num_particles": 4,
+            "adaptive_resampling": True,
+            "resample_frequency": self.args.resample_frequency,
+            "resampling_t_start": self.args.resampling_t_start,
+            "resampling_t_end": self.args.resampling_t_end,
+            "time_steps": self.args.time_steps,
+            "latent_to_decode_fn": lambda x: torch.clamp(x, -1, 1) * 0.5 + 0.5,
+            "use_smc": True if not self.args.no_steering else False,
+            "output_dir": "./outputs/generated/fkd_results",
+            "print_rewards": False,
+            "visualize_intermediate": False,
+            "visualize_x0": False,
+        }
+
+        reward_fn = do_aft_score
+
+        reward_fn_args = {
+            "feature_pool_model": init_feature_pool_model,
+            "feature_pool_pretrained": init_feature_pool_pretrained,
+            "target_pool": init_target_pool,
+            "aft_module": self.aft_module,
+            "score": self.args.aft_score,
+        }
+        
+        # # Set seeds
+        # torch.manual_seed(self.args.seed)
+        # np.random.seed(self.args.seed)
+        # random.seed(self.args.seed)
+        
+        image_ind = 0
+        for _ in tqdm(range(self.args.num_target_images), desc="Generating synthetic images"): # NOTE: assuming generating one image per iteration
+            with torch.autocast(device_type=next(iter(self.edm_generator.parameters())).device.type, dtype=torch.float16):
+                result = self.edm_generator.sample_fk_steering(fkd_args=FKD_ARGS, reward_fn=reward_fn, reward_fn_args=reward_fn_args)
+            
+            images = result[0]
+            labels = result[1].cpu().numpy().tolist()
+            
+            images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
+            
+            for image_np, label in zip(images_np, labels):
+                image_path = os.path.join(save_dir, class_names[label], f"{image_ind:06d}.png")
+                os.makedirs(os.path.dirname(image_path), exist_ok=True)
+                Image.fromarray(image_np, "RGB").save(image_path)
+                image_ind += 1
+            
+            # Update feature pools
+            images = torch.clamp(images, -1., 1.) * 0.5 + 0.5
+            features_model = self.aft_module.get_model_feature(images)
+            features_pretrained = self.aft_module.get_pretrained_feature(images)
+            
+            reward_fn_args["feature_pool_model"] = torch.cat([reward_fn_args["feature_pool_model"], features_model], dim=0)
+            reward_fn_args["feature_pool_pretrained"] = torch.cat([reward_fn_args["feature_pool_pretrained"], features_pretrained], dim=0)
     
     def _generate_with_edm(self, save_dir, class_names, num_target_images, train_loader):
         """Generate synthetic data using EDM + FK steering."""
@@ -676,7 +771,7 @@ class IterativeTrainer:
         # Create synthetic dataset
         synthetic_ds = SyntheticDataset(
             synthetic_dir, self.args.class_file, None,
-            transform=self.feature_get_transform(train=True)
+            transform=self.feature_get_transform(train=False)
         )
         
         synthetic_loader = get_loader(
@@ -1011,6 +1106,13 @@ def main():
     parser.add_argument('--linear_data_size_scaling', action='store_true', help='Scale training data size linearly with iteration number (e.g., iter 1: x, iter 2: 2x, etc.)')
 
     parser.add_argument('--stop_prior_grad_after_one_iteration', action='store_true', help='Stop prior gradient updates after the first iteration')
+
+    parser.add_argument("--original_aft_steering", action='store_true', help="Use original AFT steering method for synthetic data generation")
+    parser.add_argument('--use_downstream', action='store_true', help='Use downstream data for feature pool initialization')
+
+
+    parser.add_argument('--use_aug', action='store_true', help='Use data augmentation during training')
+
 
     args = parser.parse_args()
 

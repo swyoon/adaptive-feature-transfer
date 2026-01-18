@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.transforms import RandomRotation, RandomHorizontalFlip
+
 import timm
 import transformers
 import clip
@@ -236,8 +238,11 @@ def create_model(model_class, out_dim, pretrained=False, extract_features=False,
 
         def get_timm_transform(train):
             data_config ["interpolation"] == "bilinear"
-            transform = timm.data.create_transform(**data_config, is_training=train)
+            transform = timm.data.create_transform(**data_config, is_training=False)
 
+            if train and model_class.startswith("resnet"): # XXX: temporally hard coded
+                transform.transforms.insert(2, RandomRotation(degrees=15))
+                transform.transforms.insert(3, RandomHorizontalFlip(p=0.5))
             if "centercrop" in transform.transforms[1].__class__.__name__.lower():
                 size = transform.transforms[1].size
                 transform.transforms[0].size = size

@@ -37,14 +37,14 @@ def save_features(train_loader, model, feature_path, debug):
         torch.save(feature_dict, feature_path)
         print(f'Saved features to {feature_path}')
 
-def main(model_class, directory, class_file=None, num_images=None, batch_size=128, num_workers=0, save_path=None, debug=False, **kwargs):
+def main(model_class, directory, class_file=None, num_images=None, batch_size=128, num_workers=4, save_path=None, debug=False, **kwargs):
     print("Saving auxiliary data features...")
     assert save_path is not None, "Please specify a save_path"
     args = locals()
     u.pretty_print_dict(args)
     model, get_transform, tokenizer, input_collate_fn = models.create_model(model_class, out_dim=0, pretrained=True, extract_features=True, **kwargs)
     model.eval()
-    synthetic_ds = SyntheticDataset(directory, class_file, num_images, transform=get_transform(train=True))
+    synthetic_ds = SyntheticDataset(directory, class_file, num_images, transform=get_transform(train=False))
     train_loader = get_loader(synthetic_ds, batch_size, num_workers=num_workers, shuffle=False, input_collate_fn=input_collate_fn)
     save_features(train_loader, model, save_path, debug)
 
