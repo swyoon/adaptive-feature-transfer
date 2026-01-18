@@ -121,6 +121,24 @@ class AFTModule(torch.nn.Module):
         prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
         return ce_loss + prior_loss
 
+    def get_total_loss_batch(self, x, y, feature_pool_model, feature_pool_pretrained):
+        with torch.no_grad():
+            outputs, feats = self.model(self.transform(x), return_feat=True)
+
+            feats_pretrained = self.pretrained_model(self.transform_pretrained(x))
+        
+        ce_loss = torch.nn.functional.cross_entropy(outputs, y, reduction="none")
+
+        prior_loss_ = []
+        for ind in range(x.shape[0]):
+            new_feature_pool_model = torch.cat([feature_pool_model, feats[ind:ind+1]], dim=0)
+            new_feature_pool_pretrained = torch.cat([feature_pool_pretrained, feats_pretrained[ind:ind+1]], dim=0)
+
+            prior_loss = - self.prior.prec * self.prior.log_prob(new_feature_pool_model, new_feature_pool_pretrained)
+            prior_loss_.append(prior_loss)
+        prior_loss = torch.stack(prior_loss_)
+        
+        return ce_loss + prior_loss
 
 
 
