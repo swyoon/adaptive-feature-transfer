@@ -252,7 +252,8 @@ class EDM(nn.Module):
                         img[0].save(f"{output_dir}/x0/class{class_label}_step{i}_{k}.png")
 
         if self.fkd is not None:
-            rewards = self.fkd.population_rs.tolist()
+            population_images = fkd_args["latent_to_decode_fn"](x_next)
+            rewards = self.fkd.reward_fn(population_images, **reward_fn_args).cpu().tolist()
             max_index = np.argmax(rewards)
         else:
             rewards = [0] * self.batch_size
