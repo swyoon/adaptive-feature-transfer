@@ -1071,7 +1071,7 @@ def main():
     
     # Generation parameters
     # parser.add_argument('--edm_ckpt', type=str, required=True, help='Path to EDM checkpoint')
-    parser.add_argument('--kpt', type=str, required=True, help='Path to checkpoint')
+    parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint')
     parser.add_argument('--aft_score', type=str, default='total', help='AFT score type')
     parser.add_argument('--num_target_images', type=int, default=3000, help='Number of synthetic images to generate')
     parser.add_argument('--no_steering', action='store_true', help='Disable FK steering (use unconditional generation)')
