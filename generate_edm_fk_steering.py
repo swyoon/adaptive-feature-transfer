@@ -165,12 +165,7 @@ def do_aft_score(images, aft_module, score, targets=None, feature_pool_model=Non
             rewards.append(reward)
         rewards = torch.stack(rewards)
     elif score == "total":
-        rewards = []
-        for image, target in zip(images, targets):
-            reward = aft_module.get_total_loss(image.unsqueeze(0), target.unsqueeze(0), feature_pool_model, feature_pool_pretrained)
-            rewards.append(reward)
-        rewards = torch.stack(rewards)
-    
+        rewards = aft_module.get_total_loss_batch(images, targets, feature_pool_model, feature_pool_pretrained)
     else:
         raise ValueError(f"Unknown score: {score}")
     return rewards
