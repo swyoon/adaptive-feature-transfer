@@ -99,7 +99,9 @@ class IterativeTrainer:
             'dataset': self.args.dataset,
             'method': self.args.method,
             'num_iterations': self.args.num_iterations,
-            'steps_per_iteration': self.args.steps,
+            'use_epochs': self.args.use_epochs,
+            'epochs_per_iteration': self.args.epochs_per_iteration if self.args.use_epochs else None,
+            'steps_per_iteration': self.args.steps if not self.args.use_epochs else None,
             'lr': self.args.lr,
             'prior_lr': self.args.prior_lr,
             'batch_size': self.args.batch_size,
@@ -225,6 +227,13 @@ class IterativeTrainer:
             raise ValueError("Sampling ratios must sum to a positive value")
 
         return [value / total for value in ratios]
+
+    def calculate_steps_from_epochs(self, dataset_size):
+        """Calculate the number of training steps from epochs."""
+        steps_per_epoch = (dataset_size + self.args.batch_size - 1) // self.args.batch_size
+        total_steps = steps_per_epoch * self.args.epochs_per_iteration
+        print(f"Epoch mode: {self.args.epochs_per_iteration} epochs x {steps_per_epoch} steps/epoch = {total_steps} total steps")
+        return total_steps
 
     def initialize_training_components(self, iteration=0):
         """Initialize or update training components."""
@@ -467,6 +476,12 @@ class IterativeTrainer:
 
         train_ds = train_dataset_for_loader
         
+        # Calculate steps for this iteration if using epoch mode
+        if self.args.use_epochs:
+            self.current_iteration_steps = self.calculate_steps_from_epochs(len(train_dataset_for_loader))
+        else:
+            self.current_iteration_steps = self.args.steps
+        
         # Initialize prior if first iteration
         if self.prior is None:
             if self.args.method == "aft":
@@ -513,24 +528,55 @@ class IterativeTrainer:
                 self.optimizer = torch.optim.SGD(param_groups, momentum=0.9)
             else:
                 self.optimizer = torch.optim.Adam(param_groups)
+        
+        # Create or update scheduler
+        # For warmup_stable_decay with epoch mode, recreate scheduler each iteration
+        # since steps may vary and ratios need to be recalculated
+        if self.args.scheduler == 'warmup_stable_decay':
+            if self.args.use_epochs:
+                # Treat warmup_steps, stable_steps, decay_steps as ratios
+                ratio_sum = self.args.warmup_steps + self.args.stable_steps + self.args.decay_steps
+                if abs(ratio_sum - 1.0) > 1e-6:
+                    print(f"Warning: warmup_steps + stable_steps + decay_steps = {ratio_sum}, expected 1.0. Normalizing ratios.")
+                    warmup_ratio = self.args.warmup_steps / ratio_sum
+                    stable_ratio = self.args.stable_steps / ratio_sum
+                    decay_ratio = self.args.decay_steps / ratio_sum
+                else:
+                    warmup_ratio = self.args.warmup_steps
+                    stable_ratio = self.args.stable_steps
+                    decay_ratio = self.args.decay_steps
+                
+                warmup_steps = int(warmup_ratio * self.current_iteration_steps)
+                stable_steps = int(stable_ratio * self.current_iteration_steps)
+                decay_steps = self.current_iteration_steps - warmup_steps - stable_steps  # Ensure total matches
+                
+                print(f"Epoch mode scheduler: warmup={warmup_steps}, stable={stable_steps}, decay={decay_steps} (total={self.current_iteration_steps})")
+            else:
+                warmup_steps = int(self.args.warmup_steps)
+                stable_steps = int(self.args.stable_steps)
+                decay_steps = int(self.args.decay_steps)
             
-            if self.args.scheduler == 'warmup_stable_decay':
-                self.scheduler = WarmupStableDecayScheduler(
-                    optimizer=self.optimizer,
-                    warmup_steps=self.args.warmup_steps,
-                    stable_steps=self.args.stable_steps,
-                    decay_steps=self.args.decay_steps,
-                )
-            else:  # cosine_annealing
+            self.scheduler = WarmupStableDecayScheduler(
+                optimizer=self.optimizer,
+                warmup_steps=warmup_steps,
+                stable_steps=stable_steps,
+                decay_steps=decay_steps,
+            )
+        elif self.scheduler is None:  # cosine_annealing, only create once
+            # For epoch mode, we estimate total steps; actual may vary per iteration
+            if self.args.use_epochs:
+                # Use a large T_max estimate; scheduler will adapt
+                total_steps = self.current_iteration_steps * self.args.num_iterations
+            else:
                 total_steps = self.args.steps * self.args.num_iterations
-                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    self.optimizer, T_max=total_steps
-                )
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=total_steps
+            )
         
         # Training hyperparameters
         hypers = {
             "lr": self.args.lr,
-            "steps": self.args.steps,
+            "steps": self.current_iteration_steps,
             "eval_steps": self.args.eval_steps,
             "wd": self.args.wd,
             "prior_lr": self.args.prior_lr,
@@ -551,7 +597,7 @@ class IterativeTrainer:
         )
         
         # Update global step counter after training
-        self.global_steps += self.args.steps
+        self.global_steps += self.current_iteration_steps
         print(f"Updated global steps to: {self.global_steps}")
         
         # Move model to CPU after training to free GPU memory
@@ -1058,8 +1104,10 @@ def main():
     parser.add_argument('--train_frac', type=float, default=1.0, help='Fraction of training data to use')
     parser.add_argument('--use_val', action='store_true', help='Use validation set')
     parser.add_argument('--method', type=str, default='aft', help='Training method')
-    parser.add_argument('--steps', type=int, default=5000, help='Training steps per iteration')
+    parser.add_argument('--steps', type=int, default=5000, help='Training steps per iteration (used when use_epochs is False)')
     parser.add_argument('--eval_steps', type=int, default=50, help='Evaluation frequency') # TODO: 1000
+    parser.add_argument('--use_epochs', action='store_true', help='Use fixed epochs per iteration instead of fixed steps')
+    parser.add_argument('--epochs_per_iteration', type=int, default=10, help='Number of epochs per iteration (used when use_epochs is True)')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--prec', type=int, default=10, help='Prior precision')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
@@ -1099,9 +1147,9 @@ def main():
     # Scheduler arguments
     parser.add_argument('--scheduler', type=str, default='cosine_annealing', choices=['cosine_annealing', 'warmup_stable_decay'],
                       help='Type of learning rate scheduler')
-    parser.add_argument('--warmup_steps', type=int, default=1000, help='Number of warmup steps for warmup_stable_decay scheduler')
-    parser.add_argument('--stable_steps', type=int, default=5000, help='Number of stable steps for warmup_stable_decay scheduler')
-    parser.add_argument('--decay_steps', type=int, default=1000, help='Number of decay steps for warmup_stable_decay scheduler')
+    parser.add_argument('--warmup_steps', type=float, default=1000, help='Number of warmup steps for warmup_stable_decay scheduler. When use_epochs is True, this is treated as a ratio (0-1) of total steps.')
+    parser.add_argument('--stable_steps', type=float, default=5000, help='Number of stable steps for warmup_stable_decay scheduler. When use_epochs is True, this is treated as a ratio (0-1) of total steps.')
+    parser.add_argument('--decay_steps', type=float, default=1000, help='Number of decay steps for warmup_stable_decay scheduler. When use_epochs is True, this is treated as a ratio (0-1) of total steps.')
 
     # fk steering
     parser.add_argument("--lmbda", type=float, default=1.0, help="Lambda parameter for FK steering")
@@ -1147,7 +1195,12 @@ def main():
     print(f"  Teacher: {args.pretrained_model}")
     print(f"  Dataset: {args.dataset}")
     print(f"  Iterations: {args.num_iterations}")
-    print(f"  Steps per iteration: {args.steps}")
+    if args.use_epochs:
+        print(f"  Training mode: Epochs")
+        print(f"  Epochs per iteration: {args.epochs_per_iteration}")
+    else:
+        print(f"  Training mode: Steps")
+        print(f"  Steps per iteration: {args.steps}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Output directory: {args.base_output_dir}")
     print(f"  Synthetic data mode: {'All accumulated' if args.use_all_synthetic else 'Current only'}")
